@@ -224,3 +224,34 @@ def walk_summary(root: os.PathLike, max_depth: int = 2, max_examples: int = 3
             "examples": files_sorted[:max_examples],
         })
     return summary
+
+
+def find_dataset_root(search_root: os.PathLike, real_name: str = "Real",
+                      max_depth: int = 6) -> "Path | None":
+    """Locate the directory that holds the gallery folder (`real_name` with BMPs).
+
+    Robust to how the dataset is mounted, e.g. any of:
+        /kaggle/input/socofing/SOCOFing
+        /kaggle/input/datasets/<owner>/socofing/SOCOFing
+        /kaggle/input/<slug>
+    Returns the parent directory of `real_name`, or None if not found.
+    """
+    search_root = Path(search_root)
+    if not search_root.exists():
+        return None
+    root_depth = len(search_root.parts)
+    for current, dirs, files in os.walk(search_root):
+        depth = len(Path(current).parts) - root_depth
+        if depth > max_depth:
+            dirs[:] = []  # prune deeper traversal
+            continue
+        dirs.sort()
+        if real_name in dirs:
+            real_path = Path(current) / real_name
+            try:
+                entries = os.listdir(real_path)
+            except OSError:
+                entries = []
+            if any(e.lower().endswith(".bmp") for e in entries[:100]):
+                return Path(current)
+    return None

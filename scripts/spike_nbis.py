@@ -127,10 +127,15 @@ def main() -> int:
     ap.add_argument("--config", default=None)
     ap.add_argument("--install-dir", default="/kaggle/working/nbis/install")
     ap.add_argument("--level", default="Easy")
+    ap.add_argument("--dataset-root", default=None)
+    ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    paths = resolve_paths(cfg)
+    if args.dataset_root:
+        active = cfg["paths"]["active_profile"]
+        cfg["paths"]["profiles"][active]["dataset_root"] = args.dataset_root
+    paths = resolve_paths(cfg, input_root=args.input_root)
     report: dict = {"level": args.level}
 
     print("== NBIS spike ==")

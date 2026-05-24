@@ -38,12 +38,23 @@ def main() -> int:
     parser.add_argument("--config", default=None, help="Path to YAML config.")
     parser.add_argument("--input-root", default="/kaggle/input",
                         help="Root to walk for dataset discovery.")
+    parser.add_argument("--dataset-root", default=None,
+                        help="Override dataset_root (skips the configured path).")
     parser.add_argument("--max-depth", type=int, default=2)
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    paths = resolve_paths(cfg)
+    if args.dataset_root:
+        active = cfg["paths"]["active_profile"]
+        cfg["paths"]["profiles"][active]["dataset_root"] = args.dataset_root
+    paths = resolve_paths(cfg, input_root=args.input_root)
     summary: dict = {"profile": paths["profile"], "warnings": []}
+    if paths.get("autodetected_root"):
+        msg = (f"auto-detected dataset_root = {paths['autodetected_root']} "
+               f"(configured path had no Real/); set this in configs/default.yaml")
+        print(f"  NOTE: {msg}")
+        summary["warnings"].append(msg)
+        summary["autodetected_root"] = paths["autodetected_root"]
 
     # --- 1. Discover the actual structure under the input root ----------------
     _print_header(f"1. Structure under {args.input_root} (<= {args.max_depth} levels)")

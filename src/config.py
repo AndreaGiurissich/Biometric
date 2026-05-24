@@ -44,17 +44,9 @@ def _deep_update(base: Dict[str, Any], upd: Dict[str, Any]) -> Dict[str, Any]:
     return base
 
 
-def resolve_paths(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    """Turn the active profile + subdir config into concrete Paths."""
-    profile_name = cfg["paths"]["active_profile"]
-    try:
-        profile = cfg["paths"]["profiles"][profile_name]
-    except KeyError as exc:  # pragma: no cover - config error
-        raise KeyError(
-            f"active_profile '{profile_name}' not found in paths.profiles"
-        ) from exc
-
-    root = Path(profile["dataset_root"])
+def _build_paths(cfg: Dict[str, Any], profile_name: str,
+                 profile: Dict[str, Any], root: os.PathLike) -> Dict[str, Any]:
+    root = Path(root)
     return {
         "profile": profile_name,
         "dataset_root": root,
@@ -67,6 +59,34 @@ def resolve_paths(cfg: Dict[str, Any]) -> Dict[str, Any]:
             for level, subdir in cfg["paths"]["altered_levels"].items()
         },
     }
+
+
+def resolve_paths(cfg: Dict[str, Any], input_root: str = "/kaggle/input",
+                  autodetect: bool = True) -> Dict[str, Any]:
+    """Turn the active profile + subdir config into concrete Paths.
+
+    If the configured Real/ folder does not exist and `autodetect` is on, search
+    beneath the configured dataset_root and then beneath `input_root` for the real
+    gallery folder, so the dataset is found regardless of how Kaggle mounts it.
+    When auto-detection fires, the chosen root is reported under 'autodetected_root'.
+    """
+    profile_name = cfg["paths"]["active_profile"]
+    try:
+        profile = cfg["paths"]["profiles"][profile_name]
+    except KeyError as exc:  # pragma: no cover - config error
+        raise KeyError(
+            f"active_profile '{profile_name}' not found in paths.profiles"
+        ) from exc
+
+    paths = _build_paths(cfg, profile_name, profile, profile["dataset_root"])
+    if autodetect and not paths["real_dir"].exists():
+        from src import dataset as ds  # local import avoids an import cycle
+        found = (ds.find_dataset_root(paths["dataset_root"])
+                 or ds.find_dataset_root(input_root))
+        if found is not None:
+            paths = _build_paths(cfg, profile_name, profile, found)
+            paths["autodetected_root"] = str(found)
+    return paths
 
 
 def dump_run_config(cfg: Dict[str, Any], out_path: os.PathLike) -> None:

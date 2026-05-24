@@ -7,7 +7,8 @@
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:sourceafis.machinezoo.com)",
       "WebSearch",
-      "WebFetch(domain:raw.githubusercontent.com)"
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "PowerShell(Write-Output \"=== local vs origin ===\"; Write-Output \"local  main : $\\(git rev-parse main\\)\"; Write-Output \"origin main : $\\(git rev-parse origin/main\\)\"; Write-Output \"=== tracking / ahead-behind ===\"; git status -sb | Select-Object -First 1; Write-Output \"=== origin/main log ===\"; git log --oneline -2 origin/main)"
     ]
   }
 }

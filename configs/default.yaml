@@ -18,7 +18,8 @@ paths:
   active_profile: kaggle          # kaggle | local
   profiles:
     kaggle:
-      dataset_root: /kaggle/input/socofing/SOCOFing
+      # ruizgara/socofing mount (verify_dataset.py auto-locates Real/ if this is off)
+      dataset_root: /kaggle/input/datasets/ruizgara/socofing/SOCOFing
       results_dir:  /kaggle/working/results
       logs_dir:     /kaggle/working/logs
       cache_dir:    /kaggle/working/cache
