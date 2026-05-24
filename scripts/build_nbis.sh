@@ -59,6 +59,7 @@ cd "$SRC_DIR" || { echo "FAIL: cannot cd $SRC_DIR"; exit 3; }
 
 # --- configure ----------------------------------------------------------------
 chmod +x setup.sh
+mkdir -p "$INSTALL_DIR"   # NBIS setup.sh aborts with "Directory doesn't exist!" otherwise
 echo "Running setup.sh $INSTALL_DIR --without-X11 ..."
 ./setup.sh "$INSTALL_DIR" --without-X11 || { echo "FAIL: setup.sh"; exit 5; }
 
