@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell($root = \"c:\\\\Dev\\\\Biometric\"; Write-Output \"=== Top-level of $root ===\"; Get-ChildItem -Force $root | Select-Object Mode, Length, Name | Format-Table -AutoSize | Out-String)",
+      "PowerShell($candidates = @\\(\"c:\\\\Dev\\\\Biometric\\\\data\", \"c:\\\\Dev\\\\Biometric\\\\data\\\\socofing\", \"c:\\\\Dev\\\\Biometric\\\\SOCOFing\", \"c:\\\\Dev\\\\Biometric\\\\data\\\\SOCOFing\"\\); foreach \\($c in $candidates\\) { if \\(Test-Path $c\\) { Write-Output \"EXISTS: $c\" } else { Write-Output \"missing: $c\" } })",
+      "PowerShell(Write-Output \"=== PWD ===\"; Get-Location; Write-Output \"=== Items \\(incl hidden\\) ===\"; Get-ChildItem -Force \"c:\\\\Dev\\\\Biometric\" -ErrorAction Continue | Format-Table Mode, Name, Length -AutoSize; Write-Output \"=== Count ===\"; \\(Get-ChildItem -Force \"c:\\\\Dev\\\\Biometric\"\\).Count)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:sourceafis.machinezoo.com)",
+      "WebSearch",
+      "WebFetch(domain:raw.githubusercontent.com)"
+    ]
+  }
+}

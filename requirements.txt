@@ -1,0 +1,24 @@
+# Python deps for the SOCOFing robustness study.
+# On Kaggle most of these are preinstalled; pip install is a no-op or fast.
+# Kaggle ships recent torch/opencv builds -- avoid hard pins that fight the image.
+
+numpy
+pandas
+pyyaml
+opencv-python>=4.4        # SIFT lives in main OpenCV since 4.4 (patent expired)
+scikit-image              # Gabor filter bank
+scikit-learn              # ROC / AUC helpers
+matplotlib                # CMC / ROC / montage figures
+tqdm
+torch                     # DINOv2 (frozen inference)
+torchvision
+pytest                    # unit tests
+
+# DINOv2 weights are pulled at runtime via torch.hub from facebookresearch/dinov2
+# -> the Kaggle notebook MUST have "Internet" enabled.
+
+# Minutiae model = NBIS (MINDTCT + BOZORTH3), built from source on Kaggle via
+# scripts/build_nbis.sh (no JVM). MINDTCT reads WSQ / ANSI-NIST (not BMP), so we
+# convert SOCOFing BMPs with the Pillow WSQ plugin:
+wsq                       # registers a .wsq codec in Pillow (BMP -> WSQ for mindtct)
+pillow                    # image I/O for the WSQ conversion

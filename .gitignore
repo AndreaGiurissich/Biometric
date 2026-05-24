@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Dataset (read-only, never committed)
+data/
+
+# Run artifacts (ephemeral on Kaggle; persisted via scripts/save_results.py)
+results/
+logs/
+cache/
+*.zip
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp

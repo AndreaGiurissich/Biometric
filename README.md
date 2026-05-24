@@ -1,0 +1,102 @@
+# SOCOFing Robustness Study
+
+Closed-set 1:N fingerprint identification on **SOCOFing**, comparing four frozen
+recognition models and measuring how a contrast-mask preprocessing pipeline
+(adapted from a face-detection robustness paper) affects performance as
+alteration difficulty increases.
+
+**No training.** Every model runs in frozen / deterministic inference mode; no
+weights are updated on SOCOFing. This is a pure evaluation study.
+
+## Protocol (frozen)
+
+- **Task:** closed-set 1:N identification.
+- **Identity = each finger** -> 6000 identities (600 subjects x 10 fingers).
+- **Gallery:** all 6000 Real images (one template per identity).
+- **Probes:** all Altered images, evaluated separately per difficulty level
+  (Easy / Medium / Hard) and per alteration type (Obl / CR / Zcut).
+- **Conditions:** `baseline` (raw) and `preprocessed` (contrast-mask pipeline
+  applied to gallery *and* probes with the same operator).
+
+## Models (all frozen)
+
+| Model | Representation | Score |
+|-------|----------------|-------|
+| NBIS MINDTCT + BOZORTH3 (minutiae) | `.xyt` minutiae template | BOZORTH3 score |
+| Gabor texture | filter-bank feature vector | cosine |
+| SIFT + RANSAC | keypoints/descriptors | RANSAC inlier count |
+| DINOv2 ViT-B/14 | CLS embedding (768-D) | cosine |
+
+> **Minutiae model = NBIS, not SourceAFIS.** There is no Python SourceAFIS
+> package (the official project is Java/.NET only), so the minutiae baseline uses
+> NIST's NBIS (MINDTCT for extraction, BOZORTH3 for matching) built from source
+> on Kaggle via `scripts/build_nbis.sh` (no JVM). MINDTCT reads WSQ / ANSI-NIST,
+> not BMP, so SOCOFing images are converted (the `wsq` Pillow plugin). Run
+> `scripts/spike_nbis.py` first to confirm the build, the working input format,
+> and minutiae counts. NBIS is calibrated for 500 dpi full-finger images;
+> SOCOFing is ~96x103 px (~200 dpi), so expect sparser templates.
+
+## Evaluation tiers
+
+- **Tier A (fair cross-model):** all 4 models on a shared, stratified, seeded
+  **2000-probe** manifest. SIFT runs on a **nested 500-probe** subset (it is
+  O(N x gallery)); its Tier A numbers carry that caveat in the report.
+- **Tier B (best estimate):** Gabor + DINOv2 on the **full** probe set.
+
+## Metrics
+
+- **Identification (rank-based, cross-model comparable):** Rank-1/5/10,
+  full CMC, Rank-N (trivially 1.0 in closed set), MRR.
+- **Verification (per-model native score scale, never cross-normalized):**
+  ROC, EER, AUC, FAR@FRR=1%, FRR@FAR=1%. Genuine = 1 pair/probe; impostors =
+  100 seeded random non-self templates/probe.
+
+## Running on Kaggle (the only supported environment)
+
+Kaggle free tier: T4 GPU, 4 vCPU, 30 GB RAM, 12 h sessions. In a notebook:
+
+```bash
+!git clone https://github.com/<user>/socofing-robustness.git
+%cd socofing-robustness
+!pip install -q -r requirements.txt
+```
+
+1. **Enable "Internet"** in the notebook settings (DINOv2 weights are pulled via
+   `torch.hub`).
+2. **Attach the SOCOFing dataset.** Confirm the real path first:
+   ```bash
+   !python scripts/verify_dataset.py --input-root /kaggle/input
+   ```
+   This walks `/kaggle/input` (2 levels), confirms the 6000-identity gallery,
+   reports per-level / per-alteration counts, orphans, and a suffix casing
+   histogram. Override `dataset_root` in `configs/default.yaml` if the slug
+   nests differently.
+3. Run experiments from the CLI in `src/` (added incrementally).
+
+`/kaggle/working/` is ephemeral: after a run, save results with
+`scripts/save_results.py` (zips + timestamps `results/`) and download them, or
+commit them back to GitHub manually (a stored PAT via Kaggle Secrets). No
+automatic git push is performed.
+
+## Reproducibility
+
+All randomness (impostor sampling, probe subsampling, RANSAC) is seeded from the
+config. The exact config used is snapshotted to `run_config.yaml` next to each
+run's results, alongside library versions and the git commit.
+
+## Repository layout
+
+```
+configs/      default.yaml  (single source of truth for all parameters)
+src/          dataset, preprocessing, models/, evaluation, pipeline
+scripts/      verify_dataset.py, spike_sourceafis.py, save_results.py, ...
+tests/        synthetic-fixture unit tests (no real data needed)
+results/      raw/  (per-experiment CSVs)  figures/  summary.csv   [gitignored]
+notebooks/    run_experiments.ipynb  (thin launcher; heavy logic stays in src/)
+```
+
+## Local development
+
+A local profile exists (`paths.active_profile: local`, dataset under
+`data/socofing/SOCOFing/`), but the project targets Kaggle. Unit tests need no
+data: `python -m pytest tests/ -v`.
