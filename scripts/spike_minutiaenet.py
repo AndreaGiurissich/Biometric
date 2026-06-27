@@ -143,6 +143,26 @@ def install_compat_shims() -> list:
     if not hasattr(np.lib, "pad"):
         np.lib.pad = np.pad
         applied.append("np.lib.pad")
+
+    # scikit-image >=0.19 dropped the `multichannel` kwarg (now `channel_axis`).
+    # fingerflow's vendored smooth_dir_map calls filters.gaussian(multichannel=).
+    # Wrap to translate the old kwarg; harmless on modern skimage.
+    try:
+        import skimage.filters as skf
+        if not getattr(skf.gaussian, "_ff_patched", False):
+            _orig_gaussian = skf.gaussian
+
+            def _gaussian_compat(*a, **k):
+                if "multichannel" in k:
+                    mc = k.pop("multichannel")
+                    k.setdefault("channel_axis", -1 if mc else None)
+                return _orig_gaussian(*a, **k)
+
+            _gaussian_compat._ff_patched = True
+            skf.gaussian = _gaussian_compat
+            applied.append("skimage.filters.gaussian(multichannel)")
+    except ImportError:
+        pass
     return applied
 
 
