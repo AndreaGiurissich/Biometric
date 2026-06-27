@@ -96,6 +96,30 @@ def ensure_fingerflow() -> str:
     return getattr(fingerflow, "__version__", "unknown")
 
 
+def install_compat_shims() -> list:
+    """Restore APIs removed from modern NumPy/SciPy that fingerflow's vendored
+    MinutiaeNet code (circa 2018) still calls. Surgical aliases -- NO downgrades,
+    so the rest of the Kaggle stack is untouched. Must run before the Extractor
+    is built (the model graph calls these at construction time).
+
+      - scipy.signal.gaussian  -> scipy.signal.windows.gaussian  (removed SciPy 1.13)
+      - np.bool/int/float/...   -> Python builtins               (removed NumPy 1.24)
+    """
+    applied: list = []
+    import numpy as np
+    import scipy.signal
+    if not hasattr(scipy.signal, "gaussian"):
+        from scipy.signal.windows import gaussian
+        scipy.signal.gaussian = gaussian
+        applied.append("scipy.signal.gaussian")
+    for name, builtin in (("bool", bool), ("int", int), ("float", float),
+                          ("object", object), ("str", str), ("complex", complex)):
+        if not hasattr(np, name):
+            setattr(np, name, builtin)
+            applied.append(f"np.{name}")
+    return applied
+
+
 def resolve_weights(models_dir: Path, precision: int) -> dict:
     """Map each network to a concrete weight file under models_dir.
 
@@ -189,6 +213,11 @@ def main() -> int:
     report["fingerflow_version"] = version
     report["install_seconds"] = round(time.time() - t0, 1)
     print(f"  fingerflow {version}")
+
+    shims = install_compat_shims()
+    report["compat_shims"] = shims
+    if shims:
+        print(f"  compat shims applied: {', '.join(shims)}")
 
     weights = resolve_weights(models_dir, args.precision)
     report["weights"] = weights
