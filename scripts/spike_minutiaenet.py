@@ -311,10 +311,14 @@ def main() -> int:
             img = cv2.resize(img, (int(w0 * scale), int(h0 * scale)),
                              interpolation=cv2.INTER_CUBIC)
         result = extractor.extract_minutiae(img)
-        # API returns either a DataFrame or an object exposing .minutiae/.core.
-        minutiae = getattr(result, "minutiae", result)
-        core = getattr(result, "core", None)
-        n = int(len(minutiae))
+        # extract_minutiae returns a dict: {'core': <df>, 'minutiae': <df>}.
+        if isinstance(result, dict):
+            minutiae = result.get("minutiae")
+            core = result.get("core")
+        else:  # fallbacks: attribute object, or a bare DataFrame
+            minutiae = getattr(result, "minutiae", result)
+            core = getattr(result, "core", None)
+        n = int(len(minutiae)) if minutiae is not None else 0
         cols = list(getattr(minutiae, "columns", []))
         print(f"    [x{scale:g}] {rec.filename}: {n} minutiae "
               f"[{w0}x{h0} -> {img.shape[1]}x{img.shape[0]}]  cols={cols}")
