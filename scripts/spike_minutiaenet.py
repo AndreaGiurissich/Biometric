@@ -98,25 +98,45 @@ def ensure_fingerflow() -> str:
 
 def install_compat_shims() -> list:
     """Restore APIs removed from modern NumPy/SciPy that fingerflow's vendored
-    MinutiaeNet code (circa 2018) still calls. Surgical aliases -- NO downgrades,
-    so the rest of the Kaggle stack is untouched. Must run before the Extractor
-    is built (the model graph calls these at construction time).
+    MinutiaeNet code (circa 2018) + CoreNet still call. Surgical aliases -- NO
+    downgrades, so the rest of the Kaggle stack is untouched. Must run before the
+    Extractor is built (the model graph calls these at construction time).
 
-      - scipy.signal.gaussian  -> scipy.signal.windows.gaussian  (removed SciPy 1.13)
-      - np.bool/int/float/...   -> Python builtins               (removed NumPy 1.24)
+      - scipy.signal.gaussian -> scipy.signal.windows.gaussian   (removed SciPy 1.13)
+      - np.bool/int/float      -> Python builtins                (removed NumPy 1.24)
+      - np.product/... etc.    -> NumPy 2.0 replacements          (removed NumPy 2.0)
     """
+    import warnings
     applied: list = []
     import numpy as np
     import scipy.signal
+
     if not hasattr(scipy.signal, "gaussian"):
         from scipy.signal.windows import gaussian
         scipy.signal.gaussian = gaussian
         applied.append("scipy.signal.gaussian")
-    for name, builtin in (("bool", bool), ("int", int), ("float", float),
-                          ("object", object), ("str", str), ("complex", complex)):
-        if not hasattr(np, name):
-            setattr(np, name, builtin)
-            applied.append(f"np.{name}")
+
+    # Bare scalar aliases removed in NumPy 1.24 (some re-added in 2.0). Probing
+    # the name can emit a cosmetic FutureWarning -- silence it.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        for name, builtin in (("bool", bool), ("int", int), ("float", float),
+                              ("object", object), ("str", str)):
+            if not hasattr(np, name):
+                setattr(np, name, builtin)
+                applied.append(f"np.{name}")
+
+    # Functions/aliases removed in NumPy 2.0 -> their current equivalents.
+    np2_aliases = {
+        "product": "prod", "cumproduct": "cumprod", "sometrue": "any",
+        "alltrue": "all", "round_": "round", "float_": "float64",
+        "unicode_": "str_", "infty": "inf", "NaN": "nan", "NAN": "nan",
+        "in1d": "isin", "trapz": "trapezoid",
+    }
+    for old, new in np2_aliases.items():
+        if not hasattr(np, old) and hasattr(np, new):
+            setattr(np, old, getattr(np, new))
+            applied.append(f"np.{old}")
     return applied
 
 
