@@ -42,10 +42,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+# fingerflow targets Keras 2 (it passes weights= to Conv2D). Modern Kaggle ships
+# Keras 3, which rejects that API. Route tensorflow.keras to the Keras-2 shim
+# (`tf-keras`) -- MUST be set before TensorFlow/fingerflow is imported.
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -71,7 +77,16 @@ WEIGHT_KEYS = {
 
 
 def ensure_fingerflow() -> str:
-    """Import fingerflow (pip-install on first run). Returns its version string."""
+    """Import fingerflow (pip-install on first run). Returns its version string.
+
+    Also ensures the Keras-2 shim `tf-keras` is present so TF_USE_LEGACY_KERAS
+    actually has a Keras 2 to route to (Kaggle ships only Keras 3 by default).
+    """
+    try:
+        import tf_keras  # noqa: F401  (provides the legacy Keras 2 backend)
+    except ImportError:
+        print("  installing 'tf-keras' (Keras 2 shim for fingerflow)...")
+        subprocess.call([sys.executable, "-m", "pip", "install", "-q", "tf-keras"])
     try:
         import fingerflow
     except ImportError:
