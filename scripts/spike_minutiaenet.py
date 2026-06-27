@@ -240,10 +240,11 @@ def main() -> int:
     ap.add_argument("--precision", type=int, default=10, choices=VALID_PRECISIONS,
                     help="VerifyNet precision = #minutiae; SOCOFing is low-res -> 10")
     ap.add_argument("--level", default="Easy")
-    ap.add_argument("--upscale", type=float, default=1.0,
-                    help="cubic-upsample factor before extraction (e.g. 4.0). "
-                         "Tests whether ~500dpi-calibrated extractors recover "
-                         "minutiae on SOCOFing's ~96px images. 1.0 = native.")
+    ap.add_argument("--upscale", default="1.0",
+                    help="comma-separated cubic-upsample factors to SWEEP before "
+                         "extraction (e.g. '1,2,4,6'). Tests whether ~500dpi-"
+                         "calibrated extractors recover minutiae on SOCOFing's "
+                         "~96px images. Models load once; each factor reuses them.")
     ap.add_argument("--dataset-root", default=None)
     ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
@@ -297,17 +298,17 @@ def main() -> int:
     extractor = Extractor(weights["coarse_net"], weights["fine_net"],
                           weights["classify_net"], weights["core_net"])
 
-    def extract(rec):
+    def extract(rec, scale):
         img = cv2.imread(rec.path)  # fingerflow expects a 3D (BGR) array
         if img is None:
             raise SystemExit(f"cv2 could not read {rec.path}")
         h0, w0 = img.shape[:2]
-        if args.upscale != 1.0:
+        if scale != 1.0:
             # NBIS and MinutiaeNet are calibrated for ~500 dpi full-finger
             # captures; SOCOFing is ~96x103. Upsample so ridge structure spans
             # the detectors' receptive fields. Cubic interpolation, same op for
             # gallery+probes. (Investigation -- not a committed preprocessing step.)
-            img = cv2.resize(img, (int(w0 * args.upscale), int(h0 * args.upscale)),
+            img = cv2.resize(img, (int(w0 * scale), int(h0 * scale)),
                              interpolation=cv2.INTER_CUBIC)
         result = extractor.extract_minutiae(img)
         # API returns either a DataFrame or an object exposing .minutiae/.core.
@@ -315,30 +316,46 @@ def main() -> int:
         core = getattr(result, "core", None)
         n = int(len(minutiae))
         cols = list(getattr(minutiae, "columns", []))
-        print(f"    {rec.filename}: {n} minutiae "
+        print(f"    [x{scale:g}] {rec.filename}: {n} minutiae "
               f"[{w0}x{h0} -> {img.shape[1]}x{img.shape[0]}]  cols={cols}")
         return minutiae, core, n
 
-    print("  extracting minutiae...")
-    m_probe, c_probe, n_probe = extract(probe)
-    m_gen, c_gen, n_gen = extract(genuine_real)
-    m_imp, c_imp, n_imp = extract(impostor_real)
-    report["minutiae"] = {"probe": n_probe, "genuine": n_gen, "impostor": n_imp}
+    factors = [float(t) for t in str(args.upscale).split(",") if t.strip()] or [1.0]
+    warn = cfg["models"].get("nbis", {}).get("min_minutiae_warn", 10)
 
-    # Best-effort matcher stage -- never let it hide the counts above.
+    print(f"  extracting minutiae (sweep over upscale factors {factors})...")
+    sweep: dict = {}
+    best = None
+    for scale in factors:
+        mp, cp, n_p = extract(probe, scale)
+        mg, cg, n_g = extract(genuine_real, scale)
+        mi, ci, n_i = extract(impostor_real, scale)
+        key = f"x{scale:g}"
+        sweep[key] = {"probe": n_p, "genuine": n_g, "impostor": n_i}
+        if best is None or min(n_p, n_g, n_i) > best["min"]:
+            best = {"scale": scale, "min": min(n_p, n_g, n_i),
+                    "vecs": ((mp, cp), (mg, cg), (mi, ci))}
+    report["sweep"] = sweep
+    report["minutiae"] = sweep[f"x{best['scale']:g}"]  # best factor = headline
+
+    # Best-effort matcher on the best factor (counts already decide viability).
     genuine_score = impostor_score = None
     matcher_error = None
-    try:
-        from fingerflow.matcher import Matcher
-        matcher = Matcher(args.precision, weights["verify_net"])
-        fp = _to_feature_vectors(m_probe, c_probe, args.precision)
-        fg = _to_feature_vectors(m_gen, c_gen, args.precision)
-        fi = _to_feature_vectors(m_imp, c_imp, args.precision)
-        genuine_score = float(matcher.verify(fp, fg))
-        impostor_score = float(matcher.verify(fp, fi))
-    except Exception as exc:  # pragma: no cover - first-run API confirmation
-        matcher_error = f"{type(exc).__name__}: {exc}"
-        print(f"  matcher stage unavailable ({matcher_error}); counts still valid.")
+    if best["min"] >= 3:
+        try:
+            from fingerflow.matcher import Matcher
+            matcher = Matcher(args.precision, weights["verify_net"])
+            (mp, cp), (mg, cg), (mi, ci) = best["vecs"]
+            fp = _to_feature_vectors(mp, cp, args.precision)
+            fg = _to_feature_vectors(mg, cg, args.precision)
+            fi = _to_feature_vectors(mi, ci, args.precision)
+            genuine_score = float(matcher.verify(fp, fg))
+            impostor_score = float(matcher.verify(fp, fi))
+        except Exception as exc:  # pragma: no cover - first-run API confirmation
+            matcher_error = f"{type(exc).__name__}: {exc}"
+            print(f"  matcher stage unavailable ({matcher_error}); counts still valid.")
+    else:
+        matcher_error = "skipped (best factor has too few minutiae)"
 
     sanity = (genuine_score is not None and impostor_score is not None
               and genuine_score > impostor_score)
@@ -350,17 +367,20 @@ def main() -> int:
     })
 
     print("\n== RESULT ==")
-    print(f"  minutiae (probe/gen/imp): {n_probe}/{n_gen}/{n_imp}  "
-          f"(NBIS spike got 6/5/4)")
+    print("  upscale sweep -- minutiae (probe/gen/imp):")
+    for key, v in sweep.items():
+        usable = "   <-- usable" if min(v.values()) >= warn else ""
+        print(f"    {key:>5}: {v['probe']}/{v['genuine']}/{v['impostor']}{usable}")
+    print(f"  baseline: NBIS native 6/5/4, MinutiaeNet native 2/2/2")
     print(f"  genuine score  : {genuine_score}")
     print(f"  impostor score : {impostor_score}")
     print(f"  sanity (gen>imp): {sanity}")
-    warn = cfg["models"].get("nbis", {}).get("min_minutiae_warn", 10)
-    if min(n_probe, n_gen, n_imp) < warn:
-        print(f"  WARNING: still below {warn} minutiae -- deep extractor did not "
-              "recover usable minutiae at this resolution.")
+    if best["min"] < warn:
+        print(f"  VERDICT: best factor x{best['scale']:g} still below {warn} "
+              "minutiae -- minutiae matching is NON-VIABLE on SOCOFing.")
     else:
-        print("  minutiae counts look usable -- viable to wrap (pending sign-off).")
+        print(f"  VERDICT: x{best['scale']:g} recovers usable minutiae -- viable "
+              "WITH an upsampling step (needs sign-off; apply to gallery+probes).")
 
     _dump(report, paths)
     return 0
