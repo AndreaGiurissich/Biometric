@@ -240,6 +240,10 @@ def main() -> int:
     ap.add_argument("--precision", type=int, default=10, choices=VALID_PRECISIONS,
                     help="VerifyNet precision = #minutiae; SOCOFing is low-res -> 10")
     ap.add_argument("--level", default="Easy")
+    ap.add_argument("--upscale", type=float, default=1.0,
+                    help="cubic-upsample factor before extraction (e.g. 4.0). "
+                         "Tests whether ~500dpi-calibrated extractors recover "
+                         "minutiae on SOCOFing's ~96px images. 1.0 = native.")
     ap.add_argument("--dataset-root", default=None)
     ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
@@ -251,7 +255,7 @@ def main() -> int:
     paths = resolve_paths(cfg, input_root=args.input_root)
     models_dir = Path(args.models_dir)
     report: dict = {"level": args.level, "precision": args.precision,
-                    "models_dir": str(models_dir)}
+                    "upscale": args.upscale, "models_dir": str(models_dir)}
 
     print("== MinutiaeNet spike (fingerflow) ==")
     t0 = time.time()
@@ -297,12 +301,22 @@ def main() -> int:
         img = cv2.imread(rec.path)  # fingerflow expects a 3D (BGR) array
         if img is None:
             raise SystemExit(f"cv2 could not read {rec.path}")
+        h0, w0 = img.shape[:2]
+        if args.upscale != 1.0:
+            # NBIS and MinutiaeNet are calibrated for ~500 dpi full-finger
+            # captures; SOCOFing is ~96x103. Upsample so ridge structure spans
+            # the detectors' receptive fields. Cubic interpolation, same op for
+            # gallery+probes. (Investigation -- not a committed preprocessing step.)
+            img = cv2.resize(img, (int(w0 * args.upscale), int(h0 * args.upscale)),
+                             interpolation=cv2.INTER_CUBIC)
         result = extractor.extract_minutiae(img)
         # API returns either a DataFrame or an object exposing .minutiae/.core.
         minutiae = getattr(result, "minutiae", result)
         core = getattr(result, "core", None)
         n = int(len(minutiae))
-        print(f"    {rec.filename}: {n} minutiae")
+        cols = list(getattr(minutiae, "columns", []))
+        print(f"    {rec.filename}: {n} minutiae "
+              f"[{w0}x{h0} -> {img.shape[1]}x{img.shape[0]}]  cols={cols}")
         return minutiae, core, n
 
     print("  extracting minutiae...")
