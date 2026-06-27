@@ -137,6 +137,12 @@ def install_compat_shims() -> list:
         if not hasattr(np, old) and hasattr(np, new):
             setattr(np, old, getattr(np, new))
             applied.append(f"np.{old}")
+
+    # np.lib.pad was removed in NumPy 2.0 -> top-level np.pad. Used in the
+    # extraction forward pass (get_maps_stft).
+    if not hasattr(np.lib, "pad"):
+        np.lib.pad = np.pad
+        applied.append("np.lib.pad")
     return applied
 
 
