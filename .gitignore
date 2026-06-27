@@ -10,6 +10,9 @@ venv/
 # Dataset (read-only, never committed)
 data/
 
+# Model weights (large; attach on Kaggle as a dataset, never committed)
+weights/
+
 # Run artifacts (ephemeral on Kaggle; persisted via scripts/save_results.py)
 results/
 logs/

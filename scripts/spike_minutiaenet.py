@@ -1,0 +1,274 @@
+"""MinutiaeNet (deep) spike -- candidate REPLACEMENT for the NBIS minutiae model.
+
+Why this exists
+---------------
+The NBIS spike (scripts/spike_nbis.py) proved the classical MINDTCT/BOZORTH3
+pipeline is *plumbing-correct* but *degenerate* on SOCOFing: ~96x103 px images
+yield only 4-6 minutiae and 0 match scores, because MINDTCT is calibrated for
+~500 dpi full-finger captures. Any classical extractor hits the same resolution
+wall. A pretrained *deep* minutiae extractor (frozen inference -- still satisfies
+the no-training rule) is the one family that can plausibly recover usable
+minutiae at this resolution without an explicit upscale step.
+
+This spike mirrors spike_nbis.py so the two are directly comparable. It will:
+  1. Ensure `fingerflow` is importable (pip-install if missing); log its version.
+  2. Locate the pretrained weights (CoarseNet/FineNet/ClassifyNet/CoreNet +
+     a VerifyNet matcher for the chosen precision). These are NOT pip-bundled --
+     if absent the spike STOPS with download/attach instructions (no fake URLs,
+     no invented numbers).
+  3. Extract minutiae for the SAME probe / genuine-real / impostor-real triple
+     spike_nbis used, logging counts -- the headline number to compare vs NBIS.
+  4. Best-effort: run the VerifyNet matcher genuine vs impostor and check the
+     sanity inequality. This stage degrades gracefully (the matcher feature
+     layout has a core-distance column whose exact encoding must be confirmed on
+     first run) -- a matcher failure still reports the all-important counts.
+  5. Write <logs_dir>/minutiaenet_spike.json, shaped like nbis_spike.json.
+
+This is a GATE / investigation step. It does NOT commit the NBIS->MinutiaeNet
+protocol change: configs/default.yaml, CLAUDE.md and README stay frozen until the
+spike proves viability AND a supervisor signs off on the model-set change.
+
+Usage:
+    python scripts/spike_minutiaenet.py [--config configs/default.yaml]
+                                        [--models-dir DIR] [--precision 10]
+                                        [--level Easy]
+
+`--models-dir` must contain the fingerflow weight files. On Kaggle the clean way
+is to attach them as a dataset, e.g. /kaggle/input/minutiaenet-weights, and pass
+that. Download links live in the fingerflow README:
+    https://github.com/jakubarendac/fingerflow
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from src.config import load_config, resolve_paths  # noqa: E402
+from src import dataset as ds  # noqa: E402
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# VerifyNet ships per fixed precision = number of minutiae in the feature vector.
+VALID_PRECISIONS = (10, 14, 20, 24, 30)
+
+# Expected weight filenames. fingerflow distributes these via Google Drive (see
+# the README) -- names can vary, so we resolve by glob/substring below rather
+# than hardcoding, and surface whatever we actually find.
+WEIGHT_KEYS = {
+    "coarse_net": ["coarse", "CoarseNet"],
+    "fine_net": ["fine", "FineNet"],
+    "classify_net": ["classify", "ClassifyNet"],
+    "core_net": ["core", "CoreNet"],
+    # "verf" tolerates fingerflow's misspelled distributions (VerfifyNet/VerfiyNet).
+    "verify_net": ["verify", "verf", "VerifyNet"],
+}
+
+
+def ensure_fingerflow() -> str:
+    """Import fingerflow (pip-install on first run). Returns its version string."""
+    try:
+        import fingerflow
+    except ImportError:
+        print("  installing 'fingerflow' (pulls TensorFlow -- can take minutes)...")
+        subprocess.call([sys.executable, "-m", "pip", "install", "-q", "fingerflow"])
+        import fingerflow  # may still raise -> surfaced to the caller
+    return getattr(fingerflow, "__version__", "unknown")
+
+
+def resolve_weights(models_dir: Path, precision: int) -> dict:
+    """Map each network to a concrete weight file under models_dir.
+
+    Resolution is by case-insensitive substring match so we tolerate the exact
+    filenames fingerflow ships. VerifyNet is additionally filtered by precision
+    (e.g. a file mentioning '10') when several VerifyNet files coexist.
+    Missing entries are reported as None -- the caller decides whether to stop.
+    """
+    files = [p for p in models_dir.rglob("*") if p.is_file()] if models_dir.exists() else []
+    resolved: dict = {}
+    for key, needles in WEIGHT_KEYS.items():
+        cands = [p for p in files
+                 if any(n.lower() in p.name.lower() for n in needles)]
+        if key == "verify_net" and len(cands) > 1:
+            pref = [p for p in cands if str(precision) in p.name]
+            cands = pref or cands
+        resolved[key] = str(cands[0]) if cands else None
+    return resolved
+
+
+def _missing_weights_msg(models_dir: Path, resolved: dict) -> str:
+    missing = [k for k, v in resolved.items() if v is None]
+    return (
+        "Pretrained weights not found.\n"
+        f"  models-dir : {models_dir}\n"
+        f"  missing    : {missing}\n"
+        "  fix: download the CoarseNet / FineNet / ClassifyNet / CoreNet and a\n"
+        "       VerifyNet model from the fingerflow README\n"
+        "       (https://github.com/jakubarendac/fingerflow), place them in\n"
+        "       --models-dir (on Kaggle: attach them as a dataset), and re-run.\n"
+        "  NOTE: not inventing weights or scores -- stopping so this is visible."
+    )
+
+
+def _to_feature_vectors(minutiae, core, precision: int):
+    """Best-effort assembly of a (precision, cols) matrix for VerifyNet.
+
+    fingerflow's matcher wants the minutiae columns plus a 'distance to core'
+    column, padded/truncated to exactly `precision` rows (highest score first).
+    The exact dtype encoding of the categorical 'class' column and the core
+    schema must be confirmed against the installed package on first run -- this
+    helper is intentionally defensive and is allowed to raise; the caller treats
+    a raise as "matcher stage unavailable" and still reports minutiae counts.
+    """
+    import numpy as np
+    import pandas as pd
+
+    df = minutiae.copy()
+    # core may be a DataFrame (x1,y1,x2,y2,...) or absent; fall back to centroid.
+    if core is not None and len(core) > 0:
+        c = core.iloc[0]
+        cx = float(c.get("x1", c.get("x", df["x"].mean())))
+        cy = float(c.get("y1", c.get("y", df["y"].mean())))
+    else:
+        cx, cy = float(df["x"].mean()), float(df["y"].mean())
+    df["dist_core"] = np.hypot(df["x"] - cx, df["y"] - cy)
+    df = df.sort_values("score", ascending=False).head(precision)
+    # coerce the categorical class to a numeric code if needed
+    if df["class"].dtype == object:
+        df["class"] = pd.Categorical(df["class"]).codes
+    feat = df[["x", "y", "angle", "score", "class", "dist_core"]].to_numpy(dtype="float32")
+    if feat.shape[0] < precision:  # pad with zero rows
+        pad = np.zeros((precision - feat.shape[0], feat.shape[1]), dtype="float32")
+        feat = np.vstack([feat, pad])
+    return feat
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="MinutiaeNet (fingerflow) spike.")
+    ap.add_argument("--config", default=None)
+    ap.add_argument("--models-dir", default="/kaggle/input/minutiaenet-weights")
+    ap.add_argument("--precision", type=int, default=10, choices=VALID_PRECISIONS,
+                    help="VerifyNet precision = #minutiae; SOCOFing is low-res -> 10")
+    ap.add_argument("--level", default="Easy")
+    ap.add_argument("--dataset-root", default=None)
+    ap.add_argument("--input-root", default="/kaggle/input")
+    args = ap.parse_args()
+
+    cfg = load_config(args.config)
+    if args.dataset_root:
+        active = cfg["paths"]["active_profile"]
+        cfg["paths"]["profiles"][active]["dataset_root"] = args.dataset_root
+    paths = resolve_paths(cfg, input_root=args.input_root)
+    models_dir = Path(args.models_dir)
+    report: dict = {"level": args.level, "precision": args.precision,
+                    "models_dir": str(models_dir)}
+
+    print("== MinutiaeNet spike (fingerflow) ==")
+    t0 = time.time()
+    version = ensure_fingerflow()
+    report["fingerflow_version"] = version
+    report["install_seconds"] = round(time.time() - t0, 1)
+    print(f"  fingerflow {version}")
+
+    weights = resolve_weights(models_dir, args.precision)
+    report["weights"] = weights
+    if any(v is None for v in weights.values()):
+        msg = _missing_weights_msg(models_dir, weights)
+        print("  " + msg.replace("\n", "\n  "))
+        report["status"] = "missing_weights"
+        _dump(report, paths)
+        raise SystemExit(1)
+
+    # Same probe / genuine / impostor triple as the NBIS spike, for comparability.
+    gallery, *_ = ds.build_gallery(paths["real_dir"])
+    probes, *_ = ds.build_probes(paths["level_dirs"][args.level], gallery)
+    if not probes:
+        raise SystemExit(f"No probes for level {args.level}; run verify_dataset first.")
+    probe = probes[0]
+    genuine_real = gallery[probe.identity]
+    impostor_real = next(r for idt, r in gallery.items() if idt != probe.identity)
+    print(f"  probe   : {probe.filename} (identity {probe.identity_str})")
+    print(f"  genuine : {genuine_real.filename}")
+    print(f"  impostor: {impostor_real.filename}")
+
+    import cv2  # noqa: E402  (only needed once we know we'll run)
+    from fingerflow.extractor import Extractor
+
+    print("  loading Extractor (CoarseNet+FineNet+ClassifyNet+CoreNet)...")
+    extractor = Extractor(weights["coarse_net"], weights["fine_net"],
+                          weights["classify_net"], weights["core_net"])
+
+    def extract(rec):
+        img = cv2.imread(rec.path)  # fingerflow expects a 3D (BGR) array
+        if img is None:
+            raise SystemExit(f"cv2 could not read {rec.path}")
+        result = extractor.extract_minutiae(img)
+        # API returns either a DataFrame or an object exposing .minutiae/.core.
+        minutiae = getattr(result, "minutiae", result)
+        core = getattr(result, "core", None)
+        n = int(len(minutiae))
+        print(f"    {rec.filename}: {n} minutiae")
+        return minutiae, core, n
+
+    print("  extracting minutiae...")
+    m_probe, c_probe, n_probe = extract(probe)
+    m_gen, c_gen, n_gen = extract(genuine_real)
+    m_imp, c_imp, n_imp = extract(impostor_real)
+    report["minutiae"] = {"probe": n_probe, "genuine": n_gen, "impostor": n_imp}
+
+    # Best-effort matcher stage -- never let it hide the counts above.
+    genuine_score = impostor_score = None
+    matcher_error = None
+    try:
+        from fingerflow.matcher import Matcher
+        matcher = Matcher(args.precision, weights["verify_net"])
+        fp = _to_feature_vectors(m_probe, c_probe, args.precision)
+        fg = _to_feature_vectors(m_gen, c_gen, args.precision)
+        fi = _to_feature_vectors(m_imp, c_imp, args.precision)
+        genuine_score = float(matcher.verify(fp, fg))
+        impostor_score = float(matcher.verify(fp, fi))
+    except Exception as exc:  # pragma: no cover - first-run API confirmation
+        matcher_error = f"{type(exc).__name__}: {exc}"
+        print(f"  matcher stage unavailable ({matcher_error}); counts still valid.")
+
+    sanity = (genuine_score is not None and impostor_score is not None
+              and genuine_score > impostor_score)
+    report.update({
+        "genuine_score": genuine_score,
+        "impostor_score": impostor_score,
+        "matcher_error": matcher_error,
+        "sanity_genuine_gt_impostor": sanity,
+    })
+
+    print("\n== RESULT ==")
+    print(f"  minutiae (probe/gen/imp): {n_probe}/{n_gen}/{n_imp}  "
+          f"(NBIS spike got 6/5/4)")
+    print(f"  genuine score  : {genuine_score}")
+    print(f"  impostor score : {impostor_score}")
+    print(f"  sanity (gen>imp): {sanity}")
+    warn = cfg["models"].get("nbis", {}).get("min_minutiae_warn", 10)
+    if min(n_probe, n_gen, n_imp) < warn:
+        print(f"  WARNING: still below {warn} minutiae -- deep extractor did not "
+              "recover usable minutiae at this resolution.")
+    else:
+        print("  minutiae counts look usable -- viable to wrap (pending sign-off).")
+
+    _dump(report, paths)
+    return 0
+
+
+def _dump(report: dict, paths: dict) -> None:
+    out = Path(paths["logs_dir"]) / "minutiaenet_spike.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with open(out, "w", encoding="utf-8") as fh:
+        json.dump(report, fh, indent=2)
+    print(f"\n  report -> {out}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
