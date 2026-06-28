@@ -118,6 +118,13 @@ models:
     grid: [8, 8]
     response: mean_abs
     l2_normalize: true
+    # Kernel/envelope params: were derived defaults in src/models/gabor.py;
+    # pinned here 2026-06-27 so the config stays the single source of truth.
+    sigma_factor: 0.56          # sigma = sigma_factor * wavelength (~1-octave bandwidth)
+    gamma: 0.5                  # spatial aspect ratio of the Gabor envelope
+    psi: 0.0                    # phase offset (0 = even/cosine filter)
+    kernel_sigma_support: 3.0   # ksize = 2*ceil(kernel_sigma_support*sigma)+1
+    canonical_size: [96, 103]   # [w, h] every image is resized to before extraction
 
   dinov2:
     hub_repo: facebookresearch/dinov2
