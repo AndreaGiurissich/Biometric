@@ -80,7 +80,7 @@ def main() -> int:
         pattern = args.glob
         if pattern is None:
             paths = resolve_paths(cfg, input_root=args.input_root)
-            pattern = str(Path(paths["results_dir"]) / "raw" / "gabor_*")
+            pattern = str(Path(paths["results_dir"]) / "raw" / "*")
         dirs = sorted(glob.glob(pattern))
     if not dirs:
         raise SystemExit("no experiment dirs found (pass dirs or --glob)")
