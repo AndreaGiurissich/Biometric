@@ -30,6 +30,9 @@ def run_cli(default_model: str | None = None) -> int:
     ap.add_argument("--full", action="store_true",
                     help="Tier B: all probes (default: Tier-A seeded subsample)")
     ap.add_argument("--limit", type=int, default=None, help="cap probes (smoke test)")
+    ap.add_argument("--workers", type=int, default=None,
+                    help="parallel workers for pairwise scoring (default: "
+                         "runtime.num_workers; 1 = serial)")
     ap.add_argument("--dataset-root", default=None)
     ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
@@ -58,7 +61,10 @@ def run_cli(default_model: str | None = None) -> int:
 
     conditions = (["baseline", "preprocessed"] if args.condition == "both"
                   else [args.condition])
-    summaries = pl.run(args.model, args.level, conditions, gallery, ids, probes, cfg, paths)
+    workers = args.workers if args.workers is not None else int(
+        cfg.get("runtime", {}).get("num_workers", 1))
+    summaries = pl.run(args.model, args.level, conditions, gallery, ids, probes,
+                       cfg, paths, workers=workers)
 
     if len(summaries) == 2:
         b, p = summaries

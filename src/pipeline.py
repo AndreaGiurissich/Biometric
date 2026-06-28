@@ -39,6 +39,39 @@ def build_model(name: str, cfg: Dict):
     raise SystemExit(f"unknown model: {name!r}")
 
 
+# --- parallel scoring (pairwise models like SIFT are O(N x gallery)) ----------
+# Workers are spawned (cross-platform; avoids cv2+fork issues) and each reloads
+# the cached gallery features once via the initializer, then scores whole probes.
+_W: Dict = {}
+
+
+def _worker_init(name, cfg, gallery_cache, condition, ids):
+    import pickle
+    _W["model"] = build_model(name, cfg)
+    _W["cfg"] = cfg
+    _W["condition"] = condition
+    _W["ids"] = ids
+    _W["row_of"] = {idt: i for i, idt in enumerate(ids)}
+    with open(gallery_cache, "rb") as fh:
+        _W["gal"] = pickle.load(fh)["feats"]
+
+
+def _score_probe(task):
+    path, stem, identity, identity_str, alt = task
+    m, gal, cfg = _W["model"], _W["gal"], _W["cfg"]
+    ids, row_of, cond = _W["ids"], _W["row_of"], _W["condition"]
+    pf = m.extract(read_image(path, cond, cfg))
+    scores = np.array([m.score(pf, gf) for gf in gal], dtype=float)
+    tr = row_of[identity]
+    is_true = np.zeros(len(ids), dtype=bool)
+    is_true[tr] = True
+    rank = ev.rank_of_match(scores, is_true, higher_is_better=True)
+    imp = mf.sample_impostor_ids(identity, ids, cfg)
+    return {"stem": stem, "identity": identity_str, "alt": alt, "rank": int(rank),
+            "genuine": float(scores[tr]),
+            "impostors": [float(scores[row_of[i]]) for i in imp]}
+
+
 def read_image(path: str, condition: str, cfg) -> np.ndarray:
     img = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -109,7 +142,8 @@ def _load_done(jsonl: Path):
     return records, done
 
 
-def run_condition(name, level, condition, gallery, ids, probes, model, cfg, paths):
+def run_condition(name, level, condition, gallery, ids, probes, model, cfg, paths,
+                  workers: int = 1):
     print(f"\n== {name} | level={level} | condition={condition} ==")
     row_of = {idt: i for i, idt in enumerate(ids)}
     mode, gal = gallery_features(name, gallery, ids, model, cfg, condition, paths["cache_dir"])
@@ -120,39 +154,59 @@ def run_condition(name, level, condition, gallery, ids, probes, model, cfg, path
     records, done = _load_done(jsonl)
     if done:
         print(f"  resuming: {len(done)} probes already scored")
+    todo = [p for p in probes if p.stem not in done]
 
     flush_every = int(cfg["checkpointing"].get("flush_every_probes", 50))
     t0 = time.time()
-    with jsonl.open("a", encoding="utf-8") as fh:
-        for probe in probes:
-            if probe.stem in done:
-                continue
-            pf = model.extract(read_image(probe.path, condition, cfg))
-            if mode == "embedding":
-                scores = gal @ pf
-            else:  # pairwise: score the probe against every gallery feature
-                scores = np.array([model.score(pf, gf) for gf in gal], dtype=float)
-            true_row = row_of[probe.identity]
-            is_true = np.zeros(len(ids), dtype=bool)
-            is_true[true_row] = True
-            rank = ev.rank_of_match(scores, is_true, higher_is_better=True)
-            imp_ids = mf.sample_impostor_ids(probe.identity, ids, cfg)
-            rec = {
-                "stem": probe.stem, "identity": probe.identity_str, "alt": probe.alt,
-                "rank": rank, "genuine": float(scores[true_row]),
-                "impostors": [float(scores[row_of[i]]) for i in imp_ids],
-            }
-            records.append(rec)
-            fh.write(json.dumps(rec) + "\n")
-            if len(records) % flush_every == 0:
-                fh.flush()
-                print(f"    scored {len(records)}/{len(probes)}  ({time.time() - t0:.0f}s)")
+    # Parallelize only the expensive pairwise path; embedding scoring is a fast
+    # matrix multiply not worth the process overhead.
+    use_parallel = mode == "pairwise" and workers > 1 and todo
 
-    scored_now = len(records) - len(done)
-    if scored_now:
+    if use_parallel:
+        import multiprocessing as mp
+        gallery_cache = Path(paths["cache_dir"]) / condition / f"{name}_gallery.pkl"
+        tasks = [(p.path, p.stem, p.identity, p.identity_str, p.alt) for p in todo]
+        print(f"  scoring {len(todo)} probes on {workers} workers (spawn)...")
+        ctx = mp.get_context("spawn")
+        with jsonl.open("a", encoding="utf-8") as fh, \
+                ctx.Pool(workers, initializer=_worker_init,
+                         initargs=(name, cfg, str(gallery_cache), condition, ids)) as pool:
+            for i, rec in enumerate(pool.imap_unordered(_score_probe, tasks, chunksize=2)):
+                records.append(rec)
+                fh.write(json.dumps(rec) + "\n")
+                if (i + 1) % flush_every == 0:
+                    fh.flush()
+                    print(f"    scored {len(done) + i + 1}/{len(probes)}  "
+                          f"({time.time() - t0:.0f}s)")
+    else:
+        with jsonl.open("a", encoding="utf-8") as fh:
+            for probe in todo:
+                pf = model.extract(read_image(probe.path, condition, cfg))
+                if mode == "embedding":
+                    scores = gal @ pf
+                else:
+                    scores = np.array([model.score(pf, gf) for gf in gal], dtype=float)
+                true_row = row_of[probe.identity]
+                is_true = np.zeros(len(ids), dtype=bool)
+                is_true[true_row] = True
+                rank = ev.rank_of_match(scores, is_true, higher_is_better=True)
+                imp_ids = mf.sample_impostor_ids(probe.identity, ids, cfg)
+                rec = {
+                    "stem": probe.stem, "identity": probe.identity_str, "alt": probe.alt,
+                    "rank": rank, "genuine": float(scores[true_row]),
+                    "impostors": [float(scores[row_of[i]]) for i in imp_ids],
+                }
+                records.append(rec)
+                fh.write(json.dumps(rec) + "\n")
+                if len(records) % flush_every == 0:
+                    fh.flush()
+                    print(f"    scored {len(records)}/{len(probes)}  ({time.time() - t0:.0f}s)")
+
+    if todo:
         dt = time.time() - t0
-        print(f"  scored {scored_now} probes in {dt:.0f}s "
-              f"({1000 * dt / scored_now:.0f} ms/probe vs {len(ids)} gallery)")
+        print(f"  scored {len(todo)} probes in {dt:.0f}s "
+              f"({1000 * dt / len(todo):.0f} ms/probe vs {len(ids)} gallery"
+              f"{', %d workers' % workers if use_parallel else ''})")
     return summarize(name, records, len(ids), cfg, level, condition, exp_dir)
 
 
@@ -203,7 +257,8 @@ def summarize(name, records, n_gallery, cfg, level, condition, exp_dir) -> dict:
     return summary
 
 
-def run(name, level, conditions, gallery, ids, probes, cfg, paths) -> List[dict]:
+def run(name, level, conditions, gallery, ids, probes, cfg, paths,
+        workers: int = 1) -> List[dict]:
     model = build_model(name, cfg)
-    return [run_condition(name, level, c, gallery, ids, probes, model, cfg, paths)
+    return [run_condition(name, level, c, gallery, ids, probes, model, cfg, paths, workers)
             for c in conditions]
