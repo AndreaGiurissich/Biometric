@@ -148,6 +148,11 @@ def run_condition(name, level, condition, gallery, ids, probes, model, cfg, path
                 fh.flush()
                 print(f"    scored {len(records)}/{len(probes)}  ({time.time() - t0:.0f}s)")
 
+    scored_now = len(records) - len(done)
+    if scored_now:
+        dt = time.time() - t0
+        print(f"  scored {scored_now} probes in {dt:.0f}s "
+              f"({1000 * dt / scored_now:.0f} ms/probe vs {len(ids)} gallery)")
     return summarize(name, records, len(ids), cfg, level, condition, exp_dir)
 
 
