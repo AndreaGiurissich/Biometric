@@ -1,6 +1,6 @@
 # SOCOFing Robustness Study
 
-Closed-set 1:N fingerprint identification on **SOCOFing**, comparing four frozen
+Closed-set 1:N fingerprint identification on **SOCOFing**, comparing three frozen
 recognition models and measuring how a contrast-mask preprocessing pipeline
 (adapted from a face-detection robustness paper) affects performance as
 alteration difficulty increases.
@@ -22,23 +22,22 @@ weights are updated on SOCOFing. This is a pure evaluation study.
 
 | Model | Representation | Score |
 |-------|----------------|-------|
-| NBIS MINDTCT + BOZORTH3 (minutiae) | `.xyt` minutiae template | BOZORTH3 score |
 | Gabor texture | filter-bank feature vector | cosine |
 | SIFT + RANSAC | keypoints/descriptors | RANSAC inlier count |
 | DINOv2 ViT-B/14 | CLS embedding (768-D) | cosine |
 
-> **Minutiae model = NBIS, not SourceAFIS.** There is no Python SourceAFIS
-> package (the official project is Java/.NET only), so the minutiae baseline uses
-> NIST's NBIS (MINDTCT for extraction, BOZORTH3 for matching) built from source
-> on Kaggle via `scripts/build_nbis.sh` (no JVM). MINDTCT reads WSQ / ANSI-NIST,
-> not BMP, so SOCOFing images are converted (the `wsq` Pillow plugin). Run
-> `scripts/spike_nbis.py` first to confirm the build, the working input format,
-> and minutiae counts. NBIS is calibrated for 500 dpi full-finger images;
-> SOCOFing is ~96x103 px (~200 dpi), so expect sparser templates.
+> **Minutiae model dropped (2026-06-27).** A minutiae baseline was investigated
+> (NBIS/MINDTCT+BOZORTH3 as the SourceAFIS stand-in, then deep MinutiaeNet via
+> `fingerflow`) but excluded: SOCOFing's ~96x103 px images are below the
+> operating resolution of both, giving degenerate templates (native extraction
+> yields 0–6 minutiae). The full analysis, the upsampling experiment, and a
+> report-ready write-up are in **`docs/minutiae_investigation.md`**. The spike
+> scripts (`scripts/spike_nbis.py`, `scripts/spike_minutiaenet.py`) are kept for
+> reproducibility.
 
 ## Evaluation tiers
 
-- **Tier A (fair cross-model):** all 4 models on a shared, stratified, seeded
+- **Tier A (fair cross-model):** all 3 models on a shared, stratified, seeded
   **2000-probe** manifest. SIFT runs on a **nested 500-probe** subset (it is
   O(N x gallery)); its Tier A numbers carry that caveat in the report.
 - **Tier B (best estimate):** Gabor + DINOv2 on the **full** probe set.
@@ -89,7 +88,8 @@ run's results, alongside library versions and the git commit.
 ```
 configs/      default.yaml  (single source of truth for all parameters)
 src/          dataset, preprocessing, models/, evaluation, pipeline
-scripts/      verify_dataset.py, spike_sourceafis.py, save_results.py, ...
+scripts/      verify_dataset.py, spike_nbis.py, spike_minutiaenet.py, save_results.py, ...
+docs/         minutiae_investigation.md  (why the minutiae model was dropped)
 tests/        synthetic-fixture unit tests (no real data needed)
 results/      raw/  (per-experiment CSVs)  figures/  summary.csv   [gitignored]
 notebooks/    run_experiments.ipynb  (thin launcher; heavy logic stays in src/)

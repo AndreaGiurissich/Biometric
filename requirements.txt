@@ -17,8 +17,9 @@ pytest                    # unit tests
 # DINOv2 weights are pulled at runtime via torch.hub from facebookresearch/dinov2
 # -> the Kaggle notebook MUST have "Internet" enabled.
 
-# Minutiae model = NBIS (MINDTCT + BOZORTH3), built from source on Kaggle via
-# scripts/build_nbis.sh (no JVM). MINDTCT reads WSQ / ANSI-NIST (not BMP), so we
-# convert SOCOFing BMPs with the Pillow WSQ plugin:
-wsq                       # registers a .wsq codec in Pillow (BMP -> WSQ for mindtct)
+# Minutiae model was DROPPED (see docs/minutiae_investigation.md). The NBIS spike
+# (scripts/spike_nbis.py) is retained for reproducibility; it still needs the
+# Pillow WSQ plugin (MINDTCT reads WSQ/ANSI-NIST, not BMP). fingerflow (used by
+# scripts/spike_minutiaenet.py) is installed by that spike on demand, not here.
+wsq                       # registers a .wsq codec in Pillow (BMP -> WSQ; NBIS spike only)
 pillow                    # image I/O for the WSQ conversion

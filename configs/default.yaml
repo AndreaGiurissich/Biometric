@@ -84,14 +84,13 @@ subsampling:
   balance: equal                # equal | proportional (equal falls back when a type is short)
   nested: true
   per_model_n_probes:           # null => model uses the full probe set (Tier B)
-    nbis:  2000
     sift:  500                 # decision: SIFT on a nested 500-probe subset (report caveat)
     gabor: null
     dinov2: null
 
 tiers:
-  A_subsample: [nbis, sift, gabor, dinov2]   # fair cross-model
-  B_full:      [gabor, dinov2]               # best estimate (embedding only)
+  A_subsample: [sift, gabor, dinov2]   # fair cross-model (minutiae dropped, see below)
+  B_full:      [gabor, dinov2]         # best estimate (embedding only)
 
 # --------------------------------------------------------------------------
 # Verification (per-model, native score scale; never cross-normalized).
@@ -144,19 +143,13 @@ models:
     min_matches: 4             # < 4 -> homography impossible -> score 0
     score: inliers
 
-  nbis:                        # replaces SourceAFIS (no Python SourceAFIS exists)
-    # Built from source on Kaggle via scripts/build_nbis.sh (mindtct + bozorth3).
-    install_dir: /kaggle/working/nbis/install
-    mindtct_path: auto         # auto => <install_dir>/bin/mindtct
-    bozorth3_path: auto
-    mindtct_extra_args: ""
-    input_format: auto         # auto | wsq | png | pgm (resolved by the spike)
-    bozorth3_mode: one_to_many # one_to_many (bozorth3 -p probe.xyt -G gallery.lis) | per_pair
-    min_minutiae_warn: 10      # warn if extracted minutiae below this
-    cache_subdir: nbis         # cache/nbis/<condition>/<image_stem>.xyt
-    minutiae_stats_csv: minutiae_stats.csv  # results/raw/<...>; #minutiae per image
-    # Caveat (logged + reported): NBIS is calibrated for 500 dpi full-finger images;
-    # SOCOFing is ~96x103 px (~200 dpi) -> sparser templates, lower-confidence scores.
+  # nbis (minutiae) -- DROPPED 2026-06-27. SOCOFing's ~96x103 px is below the
+  # operating resolution of both NBIS/MINDTCT and deep MinutiaeNet; native
+  # extraction is degenerate (see docs/minutiae_investigation.md). The spike
+  # scripts (scripts/spike_nbis.py, scripts/spike_minutiaenet.py) and the
+  # min_minutiae_warn knob they read are retained for reproducibility.
+  nbis:
+    min_minutiae_warn: 10      # only consumed by the (retained) spike scripts
 
 # --------------------------------------------------------------------------
 # Checkpointing / resume (Kaggle 12h sessions are ephemeral).
@@ -173,5 +166,3 @@ checkpointing:
 runtime:
   num_workers: 4               # Kaggle 4 vCPU
   parallel_axis: probe         # each worker scores one probe vs the full gallery
-  nbis_parallel: process       # bozorth3 is native C (no GIL/JVM); subprocess-parallel
-  # bozorth3 one_to_many mode amortizes process startup over the whole gallery

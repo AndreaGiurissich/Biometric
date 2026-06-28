@@ -29,15 +29,18 @@ constraints are **frozen** -- do not change them without explicit sign-off.
 
 ## Models (frozen set; unified extract/score interface)
 
-1. **NBIS** MINDTCT + BOZORTH3 (minutiae) -- *swapped in for SourceAFIS*, which
-   has no Python package. Built from source on Kaggle; no JVM.
-2. **Gabor** texture descriptor (8 orient x 4 scale, 8x8 grid, cosine).
-3. **SIFT + RANSAC** (inlier count). O(N x gallery) -> Tier A on a nested 500 probes.
-4. **DINOv2** ViT-B/14 frozen, CLS embedding (768-D), cosine, 224x224.
+Three models. The **minutiae** model (NBIS, the SourceAFIS stand-in) was
+**dropped 2026-06-27**: SOCOFing's ~96x103 px is below the operating resolution
+of both NBIS/MINDTCT and deep MinutiaeNet, so extraction is degenerate. See
+`docs/minutiae_investigation.md`. Spike scripts are retained for reproducibility.
+
+1. **Gabor** texture descriptor (8 orient x 4 scale, 8x8 grid, cosine).
+2. **SIFT + RANSAC** (inlier count). O(N x gallery) -> Tier A on a nested 500 probes.
+3. **DINOv2** ViT-B/14 frozen, CLS embedding (768-D), cosine, 224x224.
 
 ## Evaluation tiers
 
-- **Tier A (fair cross-model):** all 4 models on a shared, seeded, stratified
+- **Tier A (fair cross-model):** all 3 models on a shared, seeded, stratified
   **2000-probe** manifest (SIFT on a nested **500**). Report the SIFT caveat.
 - **Tier B (best estimate):** Gabor + DINOv2 on the **full** probe set.
 
@@ -63,7 +66,8 @@ to `run_config.yaml` per run, with lib versions + git commit.
 
 ## Implementation order (incremental, smoke-test each)
 
-scaffold + parser + on-Kaggle verification -> **NBIS spike (surface results)** ->
-preprocessing + montage (**surface montages**) -> evaluation utils -> Gabor
-end-to-end -> checkpointing + subsampling -> DINOv2 -> SIFT -> full matrix.
-Gates: surface NBIS spike results and preprocessing montages before moving past them.
+scaffold + parser + on-Kaggle verification -> ~~NBIS spike~~ (**done -> minutiae
+dropped**, see docs/minutiae_investigation.md) -> preprocessing + montage
+(**surface montages**) -> evaluation utils -> Gabor end-to-end -> checkpointing +
+subsampling -> DINOv2 -> SIFT -> full matrix.
+Gate: surface preprocessing montages before moving past them.
