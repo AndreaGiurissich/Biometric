@@ -12,6 +12,7 @@ model sees it, so every model shares the same condition definition.
 from __future__ import annotations
 
 import json
+import pickle
 import time
 from pathlib import Path
 from typing import Dict, List
@@ -32,6 +33,9 @@ def build_model(name: str, cfg: Dict):
     if name == "dinov2":
         from src.models.dinov2 import Dinov2Model
         return Dinov2Model(cfg)
+    if name == "sift":
+        from src.models.sift import SiftModel
+        return SiftModel(cfg)
     raise SystemExit(f"unknown model: {name!r}")
 
 
@@ -44,25 +48,53 @@ def read_image(path: str, condition: str, cfg) -> np.ndarray:
     return img
 
 
-def gallery_descriptors(name, gallery, ids, model, cfg, condition, cache_dir):
-    """(N, D) float32 gallery-descriptor matrix, cached per (model, condition)."""
-    cache = Path(cache_dir) / condition / f"{name}_gallery.npz"
+def gallery_features(name, gallery, ids, model, cfg, condition, cache_dir):
+    """Gallery features cached per (model, condition).
+
+    Returns (mode, data):
+      embedding -> ("embedding", (N, D) float32 matrix)
+      pairwise  -> ("pairwise", list of per-image feature objects)
+    """
+    score_type = getattr(model, "score_type", "embedding")
     key = [mf._id_key(i) for i in ids]
+    cdir = Path(cache_dir) / condition
+
+    if score_type == "embedding":
+        cache = cdir / f"{name}_gallery.npz"
+        if cache.exists():
+            data = np.load(cache, allow_pickle=True)
+            if list(data["ids"]) == key:
+                print(f"  gallery descriptors: cache hit ({cache})")
+                return "embedding", data["G"].astype(np.float32)
+        print(f"  extracting {len(ids)} gallery descriptors ({name}/{condition})...")
+        G = np.zeros((len(ids), model.descriptor_length), dtype=np.float32)
+        t0 = time.time()
+        for i, idt in enumerate(ids):
+            G[i] = model.extract(read_image(gallery[idt].path, condition, cfg))
+            if (i + 1) % 1000 == 0:
+                print(f"    {i + 1}/{len(ids)}  ({time.time() - t0:.0f}s)")
+        cdir.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(cache, ids=np.array(key), G=G)
+        return "embedding", G
+
+    # pairwise (e.g. SIFT): variable-size features -> pickle cache.
+    cache = cdir / f"{name}_gallery.pkl"
     if cache.exists():
-        data = np.load(cache, allow_pickle=True)
-        if list(data["ids"]) == key:
-            print(f"  gallery descriptors: cache hit ({cache})")
-            return data["G"].astype(np.float32)
-    print(f"  extracting {len(ids)} gallery descriptors ({name}/{condition})...")
-    G = np.zeros((len(ids), model.descriptor_length), dtype=np.float32)
-    t0 = time.time()
+        with cache.open("rb") as fh:
+            data = pickle.load(fh)
+        if data["ids"] == key:
+            print(f"  gallery features: cache hit ({cache})")
+            return "pairwise", data["feats"]
+    print(f"  extracting {len(ids)} gallery features ({name}/{condition})...")
+    feats, t0 = [], time.time()
     for i, idt in enumerate(ids):
-        G[i] = model.extract(read_image(gallery[idt].path, condition, cfg))
+        feats.append(model.extract(read_image(gallery[idt].path, condition, cfg)))
         if (i + 1) % 1000 == 0:
             print(f"    {i + 1}/{len(ids)}  ({time.time() - t0:.0f}s)")
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(cache, ids=np.array(key), G=G)
-    return G
+    cdir.mkdir(parents=True, exist_ok=True)
+    with cache.open("wb") as fh:
+        pickle.dump({"ids": key, "feats": feats}, fh)
+    return "pairwise", feats
 
 
 def _load_done(jsonl: Path):
@@ -80,7 +112,7 @@ def _load_done(jsonl: Path):
 def run_condition(name, level, condition, gallery, ids, probes, model, cfg, paths):
     print(f"\n== {name} | level={level} | condition={condition} ==")
     row_of = {idt: i for i, idt in enumerate(ids)}
-    G = gallery_descriptors(name, gallery, ids, model, cfg, condition, paths["cache_dir"])
+    mode, gal = gallery_features(name, gallery, ids, model, cfg, condition, paths["cache_dir"])
 
     exp_dir = Path(paths["results_dir"]) / "raw" / f"{name}_{level}_{condition}"
     exp_dir.mkdir(parents=True, exist_ok=True)
@@ -95,7 +127,11 @@ def run_condition(name, level, condition, gallery, ids, probes, model, cfg, path
         for probe in probes:
             if probe.stem in done:
                 continue
-            scores = G @ model.extract(read_image(probe.path, condition, cfg))
+            pf = model.extract(read_image(probe.path, condition, cfg))
+            if mode == "embedding":
+                scores = gal @ pf
+            else:  # pairwise: score the probe against every gallery feature
+                scores = np.array([model.score(pf, gf) for gf in gal], dtype=float)
             true_row = row_of[probe.identity]
             is_true = np.zeros(len(ids), dtype=bool)
             is_true[true_row] = True

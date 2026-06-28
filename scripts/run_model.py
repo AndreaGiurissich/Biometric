@@ -22,7 +22,7 @@ from src import pipeline as pl  # noqa: E402
 def run_cli(default_model: str | None = None) -> int:
     ap = argparse.ArgumentParser(description="End-to-end model runner.")
     ap.add_argument("--model", default=default_model, required=default_model is None,
-                    choices=["gabor", "dinov2"])
+                    choices=["gabor", "dinov2", "sift"])
     ap.add_argument("--config", default=None)
     ap.add_argument("--level", default="Easy")
     ap.add_argument("--condition", default="both",
@@ -46,6 +46,11 @@ def run_cli(default_model: str | None = None) -> int:
     if not probes:
         raise SystemExit(f"No probes for level {args.level}; run verify_dataset first.")
     probes = probes if args.full else mf.build_manifest(probes, cfg)
+    # Per-model nested cap (e.g. SIFT's 500): a prefix of the balanced manifest.
+    if not args.full:
+        cap = cfg["subsampling"].get("per_model_n_probes", {}).get(args.model)
+        if cap:
+            probes = probes[:int(cap)]
     if args.limit:
         probes = probes[:args.limit]
     print(f"model={args.model}  gallery={len(ids)}  probes={len(probes)}  "
