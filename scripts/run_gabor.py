@@ -127,18 +127,34 @@ def summarize(records, n_gallery, cfg, level, condition, exp_dir) -> dict:
     impostor = np.array([s for r in records for s in r["impostors"]], dtype=float)
 
     ec = cfg["evaluation"]
-    idm = ev.identification_metrics(ranks, n_gallery, ec.get("ranks_to_report", [1, 5, 10]))
+    ranks_to_report = ec.get("ranks_to_report", [1, 5, 10])
+    idm = ev.identification_metrics(ranks, n_gallery, ranks_to_report)
     far_targets = ec.get("far_at_frr", [0.01])
     vm = ev.verification_metrics(genuine, impostor, higher_is_better=True,
                                  far_at_frr_targets=far_targets,
                                  frr_at_far_targets=far_targets)
     cmc = idm.pop("cmc")  # array -> store separately, keep summary JSON-clean
 
+    # Per-alteration breakdown (protocol evaluates per level AND per alteration).
+    per_alt = {}
+    for a in sorted({r["alt"] for r in records}):
+        sub = [r for r in records if r["alt"] == a]
+        sr = np.array([r["rank"] for r in sub])
+        sg = np.array([r["genuine"] for r in sub], dtype=float)
+        si = np.array([s for r in sub for s in r["impostors"]], dtype=float)
+        per_alt[a] = {
+            "n": len(sub),
+            **{f"rank_{k}": float(np.mean(sr <= k)) for k in ranks_to_report},
+            "eer": ev.eer(sg, si, higher_is_better=True),
+            "auc": ev.roc_auc(sg, si, higher_is_better=True),
+        }
+
     summary = {
         "model": "gabor", "level": level, "condition": condition,
         "n_probes": len(records), "n_gallery": n_gallery,
         "n_impostor_scores": int(impostor.size),
         "identification": idm, "verification": vm,
+        "per_alteration": per_alt,
     }
     with (exp_dir / "summary.json").open("w", encoding="utf-8") as fh:
         json.dump(summary, fh, indent=2)
@@ -149,6 +165,9 @@ def summarize(records, n_gallery, cfg, level, condition, exp_dir) -> dict:
           f"/ {idm.get('rank_10'):.4f}   MRR {idm['mrr']:.4f}")
     print(f"    EER {vm['eer']:.4f}   AUC {vm['auc']:.4f}   "
           f"FAR@FRR={far_targets[0]} {vm[f'far_at_frr_{far_targets[0]}']:.4f}")
+    for a, pa in per_alt.items():
+        print(f"      by-alt {a:<5} n={pa['n']:<5} "
+              f"Rank-1 {pa['rank_1']:.4f}  EER {pa['eer']:.4f}")
     print(f"    summary -> {exp_dir / 'summary.json'}")
     return summary
 
