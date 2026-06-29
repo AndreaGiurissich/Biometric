@@ -192,13 +192,18 @@ def print_table(recs):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Synthesize summaries into tables + figures.")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--results-dir", default=None,
+                    help="read raw/ and write outputs here (e.g. a downloaded "
+                         "results folder); skips the dataset/profile entirely")
     ap.add_argument("--glob", default=None)
     ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
 
-    cfg = load_config(args.config)
-    paths = resolve_paths(cfg, input_root=args.input_root)
-    results_dir = Path(paths["results_dir"])
+    if args.results_dir:
+        results_dir = Path(args.results_dir)
+    else:
+        paths = resolve_paths(load_config(args.config), input_root=args.input_root)
+        results_dir = Path(paths["results_dir"])
     pattern = args.glob or str(results_dir / "raw" / "*")
     dirs = sorted(glob.glob(pattern))
 

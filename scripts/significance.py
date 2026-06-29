@@ -76,16 +76,21 @@ def analyze_pair(base, prep, n_boot, seed):
 def main() -> int:
     ap = argparse.ArgumentParser(description="Paired significance tests.")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--results-dir", default=None,
+                    help="read raw/ and write significance.csv here (e.g. a "
+                         "downloaded results folder); no dataset/profile needed")
     ap.add_argument("--n-boot", type=int, default=2000)
     ap.add_argument("--glob", default=None)
     ap.add_argument("--input-root", default="/kaggle/input")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    paths = resolve_paths(cfg, input_root=args.input_root)
-    results_dir = Path(paths["results_dir"])
-    raw = Path(args.glob) if args.glob else results_dir / "raw"
     seed = int(cfg.get("subsampling", {}).get("seed", 1234))
+    if args.results_dir:
+        results_dir = Path(args.results_dir)
+    else:
+        results_dir = Path(resolve_paths(cfg, input_root=args.input_root)["results_dir"])
+    raw = Path(args.glob) if args.glob else results_dir / "raw"
 
     rows = []
     for model in MODEL_ORDER:
@@ -101,6 +106,7 @@ def main() -> int:
     if not rows:
         raise SystemExit(f"no baseline/preprocessed pairs found under {raw}")
 
+    results_dir.mkdir(parents=True, exist_ok=True)
     out = results_dir / "significance.csv"
     cols = ["model", "level", "n_paired", "rank1_base", "rank1_prep",
             "mcnemar_b", "mcnemar_c", "mcnemar_p",
