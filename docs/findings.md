@@ -84,6 +84,16 @@ universal good: its value depends on the downstream representation.
 - **SIFT is robust to all** (≥0.958) — geometric keypoint consistency survives
   rotation, cutting, and partial obliteration.
 
+## Statistical significance (paired)
+
+Both conditions are evaluated on the same probes, so the preprocessing effect is
+tested paired: **McNemar** on Rank-1 hits (identification) and a **paired
+bootstrap** CI/p for ΔEER and ΔAUC (verification), resampling probes. Run
+`scripts/significance.py` -> `results/significance.csv`. Report each ΔRank-1/ΔEER
+with its p-value: the Gabor gains on Medium/Hard are expected to clear
+significance while the small Easy gain (+0.65 pp Rank-1) is likely within
+sampling noise -- state that explicitly rather than over-claiming.
+
 ## Caveats (for honest reporting)
 
 - **SIFT runs on a nested 500-probe subset** (it is O(N × gallery)); its numbers

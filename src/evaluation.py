@@ -84,8 +84,8 @@ def roc_rates(genuine, impostor, higher_is_better: bool = True
     FRR(t) = P(genuine rejected)  = mean(genuine  <  t)
     """
     g, im = _oriented(genuine, impostor, higher_is_better)
-    g.sort()
-    im.sort()
+    g = np.sort(g)   # np.sort copies -> the caller's arrays are never mutated
+    im = np.sort(im)
     thr = np.unique(np.concatenate([g, im]))
     far = (len(im) - np.searchsorted(im, thr, side="left")) / len(im)
     frr = np.searchsorted(g, thr, side="left") / len(g)
@@ -124,7 +124,13 @@ def roc_auc(genuine, impostor, higher_is_better: bool = True) -> float:
 
 def far_at_frr(genuine, impostor, frr_target: float,
                higher_is_better: bool = True) -> float:
-    """FAR at the operating point where FRR equals ``frr_target``."""
+    """FAR at the operating point where FRR equals ``frr_target``.
+
+    Convention: linear interpolation of the FAR-vs-FRR curve (np.interp). On a
+    vertical ROC segment (several thresholds sharing one FRR but different FAR)
+    the returned value sits between the segment's endpoints -- a fixed, documented
+    choice rather than a worst-/best-case selection.
+    """
     _, far, frr = roc_rates(genuine, impostor, higher_is_better)
     order = np.argsort(frr)  # frr increasing
     return float(np.interp(frr_target, frr[order], far[order]))
@@ -132,7 +138,8 @@ def far_at_frr(genuine, impostor, frr_target: float,
 
 def frr_at_far(genuine, impostor, far_target: float,
                higher_is_better: bool = True) -> float:
-    """FRR at the operating point where FAR equals ``far_target``."""
+    """FRR at the operating point where FAR equals ``far_target`` (same
+    linear-interpolation convention as far_at_frr)."""
     _, far, frr = roc_rates(genuine, impostor, higher_is_better)
     order = np.argsort(far)  # far increasing
     return float(np.interp(far_target, far[order], frr[order]))

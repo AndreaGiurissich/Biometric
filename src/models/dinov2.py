@@ -8,6 +8,11 @@ L2-normalized and compared by cosine.
 
 All params come from ``cfg['models']['dinov2']``. Preprocessing (baseline vs
 contrast-mask) is applied to the grayscale image UPSTREAM, before this model.
+
+Reproducibility note: inference is not bit-exact across GPUs/driver versions
+(cuDNN kernels are not pinned to deterministic algorithms, and fp16 amplifies
+small differences). For rank-based and EER metrics the effect is negligible, but
+exact embeddings may differ on different hardware -- worth a footnote in reports.
 """
 from __future__ import annotations
 

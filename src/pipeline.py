@@ -11,6 +11,7 @@ model sees it, so every model shares the same condition definition.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import pickle
 import time
@@ -19,6 +20,25 @@ from typing import Dict, List
 
 import cv2
 import numpy as np
+
+
+def _pair_seed(stem: str, identity) -> int:
+    """Deterministic per-(probe, gallery-identity) RNG seed for RANSAC, so a
+    pairwise score does not depend on execution order (serial/parallel/resume)."""
+    return mf._stable_seed(0, f"{stem}|{mf._id_key(identity)}") & 0x7FFFFFFF
+
+
+def _cache_sig(cfg: Dict, name: str, condition: str) -> str:
+    """Signature of the params a cached gallery descriptor depends on.
+
+    Covers the model's own config block and -- for the preprocessed condition --
+    the preprocessing block, so changing any of them invalidates the cache instead
+    of silently serving stale descriptors (CLAUDE.md: no silent param changes)."""
+    blocks = {"model": cfg["models"].get(name, {})}
+    if condition == "preprocessed":
+        blocks["preprocessing"] = cfg.get("preprocessing", {})
+    payload = json.dumps(blocks, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.md5(payload).hexdigest()[:12]
 
 from src import dataset as ds  # noqa: F401  (re-exported convenience)
 from src import evaluation as ev
@@ -61,7 +81,8 @@ def _score_probe(task):
     m, gal, cfg = _W["model"], _W["gal"], _W["cfg"]
     ids, row_of, cond = _W["ids"], _W["row_of"], _W["condition"]
     pf = m.extract(read_image(path, cond, cfg))
-    scores = np.array([m.score(pf, gf) for gf in gal], dtype=float)
+    scores = np.array([m.score(pf, gf, pair_seed=_pair_seed(stem, gid))
+                       for gid, gf in zip(ids, gal)], dtype=float)
     tr = row_of[identity]
     is_true = np.zeros(len(ids), dtype=bool)
     is_true[tr] = True
@@ -90,15 +111,18 @@ def gallery_features(name, gallery, ids, model, cfg, condition, cache_dir):
     """
     score_type = getattr(model, "score_type", "embedding")
     key = [mf._id_key(i) for i in ids]
+    sig = _cache_sig(cfg, name, condition)
     cdir = Path(cache_dir) / condition
 
     if score_type == "embedding":
         cache = cdir / f"{name}_gallery.npz"
         if cache.exists():
             data = np.load(cache, allow_pickle=True)
-            if list(data["ids"]) == key:
+            cached_sig = str(data["sig"]) if "sig" in data else ""
+            if list(data["ids"]) == key and cached_sig == sig:
                 print(f"  gallery descriptors: cache hit ({cache})")
                 return "embedding", data["G"].astype(np.float32)
+            print("  gallery cache stale (params changed) -> re-extracting")
         print(f"  extracting {len(ids)} gallery descriptors ({name}/{condition})...")
         G = np.zeros((len(ids), model.descriptor_length), dtype=np.float32)
         t0 = time.time()
@@ -107,7 +131,7 @@ def gallery_features(name, gallery, ids, model, cfg, condition, cache_dir):
             if (i + 1) % 1000 == 0:
                 print(f"    {i + 1}/{len(ids)}  ({time.time() - t0:.0f}s)")
         cdir.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(cache, ids=np.array(key), G=G)
+        np.savez_compressed(cache, ids=np.array(key), G=G, sig=sig)
         return "embedding", G
 
     # pairwise (e.g. SIFT): variable-size features -> pickle cache.
@@ -115,9 +139,10 @@ def gallery_features(name, gallery, ids, model, cfg, condition, cache_dir):
     if cache.exists():
         with cache.open("rb") as fh:
             data = pickle.load(fh)
-        if data["ids"] == key:
+        if data.get("ids") == key and data.get("sig") == sig:
             print(f"  gallery features: cache hit ({cache})")
             return "pairwise", data["feats"]
+        print("  gallery cache stale (params changed) -> re-extracting")
     print(f"  extracting {len(ids)} gallery features ({name}/{condition})...")
     feats, t0 = [], time.time()
     for i, idt in enumerate(ids):
@@ -126,7 +151,7 @@ def gallery_features(name, gallery, ids, model, cfg, condition, cache_dir):
             print(f"    {i + 1}/{len(ids)}  ({time.time() - t0:.0f}s)")
     cdir.mkdir(parents=True, exist_ok=True)
     with cache.open("wb") as fh:
-        pickle.dump({"ids": key, "feats": feats}, fh)
+        pickle.dump({"ids": key, "sig": sig, "feats": feats}, fh)
     return "pairwise", feats
 
 
@@ -185,7 +210,9 @@ def run_condition(name, level, condition, gallery, ids, probes, model, cfg, path
                 if mode == "embedding":
                     scores = gal @ pf
                 else:
-                    scores = np.array([model.score(pf, gf) for gf in gal], dtype=float)
+                    scores = np.array(
+                        [model.score(pf, gf, pair_seed=_pair_seed(probe.stem, gid))
+                         for gid, gf in zip(ids, gal)], dtype=float)
                 true_row = row_of[probe.identity]
                 is_true = np.zeros(len(ids), dtype=bool)
                 is_true[true_row] = True

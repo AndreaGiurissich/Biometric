@@ -55,8 +55,16 @@ class SiftModel:
         desc = desc if desc is not None else np.zeros((0, 128), dtype=np.float32)
         return {"pts": pts, "desc": desc.astype(np.float32)}
 
-    def score(self, a: Dict[str, np.ndarray], b: Dict[str, np.ndarray]) -> float:
-        """Inlier count after Lowe ratio test + RANSAC homography."""
+    def score(self, a: Dict[str, np.ndarray], b: Dict[str, np.ndarray],
+              pair_seed: int = None) -> float:
+        """Inlier count after Lowe ratio test + RANSAC homography.
+
+        ``pair_seed`` (if given) reseeds OpenCV's global RNG immediately before
+        findHomography, so the RANSAC inlier count for a (probe, gallery) pair is
+        independent of how many other pairs were scored first -- making serial,
+        parallel and resumed runs identical. Without it, results depend on
+        execution order (cv2's RNG is global and advances per findHomography call).
+        """
         da, db = a["desc"], b["desc"]
         if len(da) < 2 or len(db) < 2:
             return 0.0
@@ -68,6 +76,8 @@ class SiftModel:
             return 0.0  # homography impossible -> score 0
         src = a["pts"][[m.queryIdx for m in good]]
         dst = b["pts"][[m.trainIdx for m in good]]
+        if pair_seed is not None:
+            cv2.setRNGSeed(int(pair_seed))
         _, mask = cv2.findHomography(src, dst, cv2.RANSAC, self.reproj_thresh,
                                      maxIters=self.max_iters)
         if mask is None:
