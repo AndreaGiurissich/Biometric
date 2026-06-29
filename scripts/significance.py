@@ -48,8 +48,12 @@ def _stars(p):
     return "***" if p < 0.001 else "**" if p < 0.01 else "*" if p < 0.05 else "ns"
 
 
-def analyze_pair(base, prep, n_boot, seed):
+def analyze_pair(base, prep, n_boot, seed, alt=None):
     stems = sorted(set(base) & set(prep))           # paired: present in both
+    if alt is not None:                             # restrict to one alteration type
+        stems = [s for s in stems if base[s]["alt"] == alt]
+    if not stems:
+        return None
     hb = np.array([base[s]["rank"] == 1 for s in stems])
     hp = np.array([prep[s]["rank"] == 1 for s in stems])
     b = int(np.sum(hb & ~hp))
@@ -100,16 +104,21 @@ def main() -> int:
                 prep = _load(raw / f"{model}_{level}_preprocessed{suffix}" / "scores.jsonl")
                 if not base or not prep:
                     continue
-                res = analyze_pair(base, prep, args.n_boot, seed)
-                res.update({"model": model, "level": level, "tier": tier})
-                rows.append(res)
+                alts = sorted({base[s]["alt"] for s in (set(base) & set(prep))})
+                for alt in ["ALL"] + alts:           # overall + per alteration type
+                    res = analyze_pair(base, prep, args.n_boot, seed,
+                                       None if alt == "ALL" else alt)
+                    if res is None:
+                        continue
+                    res.update({"model": model, "level": level, "tier": tier, "alt": alt})
+                    rows.append(res)
 
     if not rows:
         raise SystemExit(f"no baseline/preprocessed pairs found under {raw}")
 
     results_dir.mkdir(parents=True, exist_ok=True)
     out = results_dir / "significance.csv"
-    cols = ["model", "level", "tier", "n_paired", "rank1_base", "rank1_prep",
+    cols = ["model", "level", "tier", "alt", "n_paired", "rank1_base", "rank1_prep",
             "mcnemar_b", "mcnemar_c", "mcnemar_p",
             "d_eer", "d_eer_lo", "d_eer_hi", "d_eer_p",
             "d_auc", "d_auc_lo", "d_auc_hi", "d_auc_p"]
@@ -123,13 +132,15 @@ def main() -> int:
     print("  model  level  T  Rank-1 base->prep  McNemar p      dEER [95% CI] p          dAUC p")
     print("  " + "-" * 90)
     for r in rows:
+        if r.get("alt") != "ALL":          # console = overview; per-alt is in the CSV
+            continue
         print(f"  {r['model']:<6} {r['level']:<6} {r['tier']}  "
               f"{r['rank1_base']:.3f}->{r['rank1_prep']:.3f}  "
               f"p={r['mcnemar_p']:.3g} {_stars(r['mcnemar_p']):<3}  "
               f"dEER {r['d_eer']:+.4f} [{r['d_eer_lo']:+.4f},{r['d_eer_hi']:+.4f}] "
               f"{_stars(r['d_eer_p'])}  "
               f"dAUC {r['d_auc']:+.4f} {_stars(r['d_auc_p'])}")
-    print(f"\n  -> {out}")
+    print(f"\n  -> {out}  (per-alteration rows included; console shows ALL only)")
     print("  (dEER negative = preprocessing lowers EER = better; * p<.05 ** .01 *** .001)")
     return 0
 
