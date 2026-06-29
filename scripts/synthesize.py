@@ -60,7 +60,7 @@ def load_records(dirs):
         cmc_path = Path(d) / "cmc.npy"
         rec = {
             "model": s["model"], "level": s["level"], "condition": s["condition"],
-            "n_probes": s.get("n_probes"),
+            "tier": s.get("tier", "A"), "n_probes": s.get("n_probes"),
             "rank_1": idn.get("rank_1"), "rank_5": idn.get("rank_5"),
             "rank_10": idn.get("rank_10"), "mrr": idn.get("mrr"),
             "eer": ver.get("eer"), "auc": ver.get("auc"),
@@ -69,16 +69,17 @@ def load_records(dirs):
             "per_alteration": s.get("per_alteration", {}),
             "cmc": np.load(cmc_path) if cmc_path.exists() else None,
         }
-        recs[(s["model"], s["level"], s["condition"])] = rec
+        recs[(s["model"], s["level"], s["condition"], rec["tier"])] = rec
     return recs
 
 
 def write_csvs(recs, out_dir):
     rows = sorted(recs.values(), key=lambda r: (
+        r["tier"],
         MODEL_ORDER.index(r["model"]) if r["model"] in MODEL_ORDER else 9,
         LEVEL_ORDER.index(r["level"]) if r["level"] in LEVEL_ORDER else 9,
         r["condition"]))
-    cols = ["model", "level", "condition", "n_probes", "rank_1", "rank_5",
+    cols = ["model", "level", "condition", "tier", "n_probes", "rank_1", "rank_5",
             "rank_10", "mrr", "eer", "auc", "far_at_frr", "frr_at_far"]
     with (out_dir / "summary.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
@@ -87,10 +88,11 @@ def write_csvs(recs, out_dir):
             w.writerow(r)
     with (out_dir / "per_alteration.csv").open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["model", "level", "condition", "alt", "n", "rank_1", "eer", "auc"])
+        w.writerow(["model", "level", "condition", "tier", "alt", "n",
+                    "rank_1", "eer", "auc"])
         for r in rows:
             for alt, pa in r["per_alteration"].items():
-                w.writerow([r["model"], r["level"], r["condition"], alt,
+                w.writerow([r["model"], r["level"], r["condition"], r["tier"], alt,
                             pa.get("n"), pa.get("rank_1"), pa.get("eer"), pa.get("auc")])
     print(f"  wrote summary.csv ({len(rows)} rows) + per_alteration.csv")
 
@@ -210,20 +212,28 @@ def main() -> int:
     recs = load_records(dirs)
     if not recs:
         raise SystemExit(f"no summary.json found under {pattern}")
-    print(f"== synthesize: {len(recs)} experiments ==")
+    tiers = sorted({k[3] for k in recs})
+    print(f"== synthesize: {len(recs)} experiments (tiers: {', '.join(tiers)}) ==")
 
     fig_dir = results_dir / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
-    write_csvs(recs, results_dir)
-    _line_by_level(recs, "rank_1", "Rank-1", "Identification vs difficulty",
-                   fig_dir / "rank1_by_level.png")
-    _line_by_level(recs, "eer", "EER", "Verification EER vs difficulty",
-                   fig_dir / "eer_by_level.png")
-    _delta_fig(recs, fig_dir / "preprocessing_delta.png")
-    _cmc_fig(recs, fig_dir / "cmc_by_level.png")
-    _per_alt_fig(recs, "Hard", fig_dir / "per_alteration_hard.png")
-    print(f"  wrote 5 figures -> {fig_dir}")
-    print_table(recs)
+    write_csvs(recs, results_dir)  # CSVs carry every tier (tier column)
+
+    # Figures are the Tier-A cross-model comparison (all 3 models; SIFT is A-only).
+    tierA = {(m, lv, c): r for (m, lv, c, t), r in recs.items() if t == "A"}
+    if tierA:
+        _line_by_level(tierA, "rank_1", "Rank-1", "Identification vs difficulty (Tier A)",
+                       fig_dir / "rank1_by_level.png")
+        _line_by_level(tierA, "eer", "EER", "Verification EER vs difficulty (Tier A)",
+                       fig_dir / "eer_by_level.png")
+        _delta_fig(tierA, fig_dir / "preprocessing_delta.png")
+        _cmc_fig(tierA, fig_dir / "cmc_by_level.png")
+        _per_alt_fig(tierA, "Hard", fig_dir / "per_alteration_hard.png")
+        print(f"  wrote 5 Tier-A figures -> {fig_dir}")
+        print_table(tierA)
+    if "B" in tiers:
+        print("\n  Tier B (full-probe best estimate) rows are in summary.csv "
+              "(tier=B); figures stay Tier A for a fair 3-model comparison.")
     return 0
 
 

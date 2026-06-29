@@ -64,7 +64,7 @@ def run_cli(default_model: str | None = None) -> int:
     workers = args.workers if args.workers is not None else int(
         cfg.get("runtime", {}).get("num_workers", 1))
     summaries = pl.run(args.model, args.level, conditions, gallery, ids, probes,
-                       cfg, paths, workers=workers)
+                       cfg, paths, workers=workers, full=args.full)
 
     if len(summaries) == 2:
         b, p = summaries

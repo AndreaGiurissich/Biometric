@@ -168,12 +168,16 @@ def _load_done(jsonl: Path):
 
 
 def run_condition(name, level, condition, gallery, ids, probes, model, cfg, paths,
-                  workers: int = 1):
-    print(f"\n== {name} | level={level} | condition={condition} ==")
+                  workers: int = 1, full: bool = False):
+    tier = "B" if full else "A"
+    print(f"\n== {name} | level={level} | condition={condition} | tier={tier} ==")
     row_of = {idt: i for i, idt in enumerate(ids)}
+    # Gallery is the same 6000 reals regardless of tier, so the cache is shared.
     mode, gal = gallery_features(name, gallery, ids, model, cfg, condition, paths["cache_dir"])
 
-    exp_dir = Path(paths["results_dir"]) / "raw" / f"{name}_{level}_{condition}"
+    # Tier B (full probe set) uses a separate dir so it never collides with Tier A.
+    suffix = "_full" if full else ""
+    exp_dir = Path(paths["results_dir"]) / "raw" / f"{name}_{level}_{condition}{suffix}"
     exp_dir.mkdir(parents=True, exist_ok=True)
     jsonl = exp_dir / "scores.jsonl"
     records, done = _load_done(jsonl)
@@ -234,10 +238,10 @@ def run_condition(name, level, condition, gallery, ids, probes, model, cfg, path
         print(f"  scored {len(todo)} probes in {dt:.0f}s "
               f"({1000 * dt / len(todo):.0f} ms/probe vs {len(ids)} gallery"
               f"{', %d workers' % workers if use_parallel else ''})")
-    return summarize(name, records, len(ids), cfg, level, condition, exp_dir)
+    return summarize(name, records, len(ids), cfg, level, condition, exp_dir, tier)
 
 
-def summarize(name, records, n_gallery, cfg, level, condition, exp_dir) -> dict:
+def summarize(name, records, n_gallery, cfg, level, condition, exp_dir, tier="A") -> dict:
     ranks = [r["rank"] for r in records]
     genuine = np.array([r["genuine"] for r in records], dtype=float)
     impostor = np.array([s for r in records for s in r["impostors"]], dtype=float)
@@ -263,7 +267,7 @@ def summarize(name, records, n_gallery, cfg, level, condition, exp_dir) -> dict:
                       "auc": ev.roc_auc(sg, si, higher_is_better=True)}
 
     summary = {
-        "model": name, "level": level, "condition": condition,
+        "model": name, "level": level, "condition": condition, "tier": tier,
         "n_probes": len(records), "n_gallery": n_gallery,
         "n_impostor_scores": int(impostor.size),
         "identification": idm, "verification": vm, "per_alteration": per_alt,
@@ -285,7 +289,8 @@ def summarize(name, records, n_gallery, cfg, level, condition, exp_dir) -> dict:
 
 
 def run(name, level, conditions, gallery, ids, probes, cfg, paths,
-        workers: int = 1) -> List[dict]:
+        workers: int = 1, full: bool = False) -> List[dict]:
     model = build_model(name, cfg)
-    return [run_condition(name, level, c, gallery, ids, probes, model, cfg, paths, workers)
+    return [run_condition(name, level, c, gallery, ids, probes, model, cfg, paths,
+                          workers, full)
             for c in conditions]

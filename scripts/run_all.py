@@ -94,7 +94,7 @@ def main() -> int:
                 continue
             for c in conditions:
                 pl.run_condition(name, level, c, gallery, ids, probes, model,
-                                 cfg, paths, workers)
+                                 cfg, paths, workers, full=args.full)
 
     # downstream digests read from disk; run as subprocesses (env carries profile)
     common = [sys.executable]

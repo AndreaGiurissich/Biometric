@@ -93,22 +93,23 @@ def main() -> int:
     raw = Path(args.glob) if args.glob else results_dir / "raw"
 
     rows = []
-    for model in MODEL_ORDER:
-        for level in LEVEL_ORDER:
-            base = _load(raw / f"{model}_{level}_baseline" / "scores.jsonl")
-            prep = _load(raw / f"{model}_{level}_preprocessed" / "scores.jsonl")
-            if not base or not prep:
-                continue
-            res = analyze_pair(base, prep, args.n_boot, seed)
-            res.update({"model": model, "level": level})
-            rows.append(res)
+    for tier, suffix in (("A", ""), ("B", "_full")):
+        for model in MODEL_ORDER:
+            for level in LEVEL_ORDER:
+                base = _load(raw / f"{model}_{level}_baseline{suffix}" / "scores.jsonl")
+                prep = _load(raw / f"{model}_{level}_preprocessed{suffix}" / "scores.jsonl")
+                if not base or not prep:
+                    continue
+                res = analyze_pair(base, prep, args.n_boot, seed)
+                res.update({"model": model, "level": level, "tier": tier})
+                rows.append(res)
 
     if not rows:
         raise SystemExit(f"no baseline/preprocessed pairs found under {raw}")
 
     results_dir.mkdir(parents=True, exist_ok=True)
     out = results_dir / "significance.csv"
-    cols = ["model", "level", "n_paired", "rank1_base", "rank1_prep",
+    cols = ["model", "level", "tier", "n_paired", "rank1_base", "rank1_prep",
             "mcnemar_b", "mcnemar_c", "mcnemar_p",
             "d_eer", "d_eer_lo", "d_eer_hi", "d_eer_p",
             "d_auc", "d_auc_lo", "d_auc_hi", "d_auc_p"]
@@ -119,10 +120,10 @@ def main() -> int:
             w.writerow({k: r.get(k) for k in cols})
 
     print(f"== paired significance (n_boot={args.n_boot}) ==")
-    print("  model  level   Rank-1 base->prep  McNemar p      dEER [95% CI] p          dAUC p")
-    print("  " + "-" * 88)
+    print("  model  level  T  Rank-1 base->prep  McNemar p      dEER [95% CI] p          dAUC p")
+    print("  " + "-" * 90)
     for r in rows:
-        print(f"  {r['model']:<6} {r['level']:<6} "
+        print(f"  {r['model']:<6} {r['level']:<6} {r['tier']}  "
               f"{r['rank1_base']:.3f}->{r['rank1_prep']:.3f}  "
               f"p={r['mcnemar_p']:.3g} {_stars(r['mcnemar_p']):<3}  "
               f"dEER {r['d_eer']:+.4f} [{r['d_eer_lo']:+.4f},{r['d_eer_hi']:+.4f}] "
