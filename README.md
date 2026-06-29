@@ -97,6 +97,21 @@ notebooks/    run_experiments.ipynb  (thin launcher; heavy logic stays in src/)
 
 ## Local development
 
-A local profile exists (`paths.active_profile: local`, dataset under
-`data/socofing/SOCOFing/`), but the project targets Kaggle. Unit tests need no
-data: `python -m pytest tests/ -v`.
+Unit tests need no data: `python -m pytest tests/ -v`.
+
+To run the **full pipeline locally**, download SOCOFing to `data/socofing/SOCOFing/`
+(so `data/socofing/SOCOFing/Real/` exists) and use the `local` profile:
+
+```bash
+# one command: all models x levels x conditions -> tables + figures + significance
+SOCOFING_PROFILE=local python scripts/run_all.py \
+    --dataset-root data/socofing/SOCOFing --workers 4
+# no GPU? skip DINOv2:  --models gabor,sift
+```
+
+`scripts/run_all.py` reuses each model across levels, skips empty levels and
+unbuildable models (e.g. DINOv2 without torch), and then runs `synthesize.py`
+(`results/summary.csv` + figures) and `significance.py` (`results/significance.csv`).
+The same steps, as a notebook, are in `notebooks/run_experiments.ipynb` (works on
+Kaggle and locally). Results land under `results/` (gitignored); bundle them with
+`scripts/save_results.py`.
