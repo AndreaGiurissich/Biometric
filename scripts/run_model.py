@@ -29,6 +29,9 @@ def run_cli(default_model: str | None = None) -> int:
                     choices=["baseline", "preprocessed", "both"])
     ap.add_argument("--full", action="store_true",
                     help="Tier B: all probes (default: Tier-A seeded subsample)")
+    ap.add_argument("--no-cap", action="store_true",
+                    help="ignore the per-model probe cap (e.g. run SIFT on the "
+                         "full 2000-probe manifest instead of its nested 500)")
     ap.add_argument("--limit", type=int, default=None, help="cap probes (smoke test)")
     ap.add_argument("--workers", type=int, default=None,
                     help="parallel workers for pairwise scoring (default: "
@@ -50,7 +53,7 @@ def run_cli(default_model: str | None = None) -> int:
         raise SystemExit(f"No probes for level {args.level}; run verify_dataset first.")
     probes = probes if args.full else mf.build_manifest(probes, cfg)
     # Per-model nested cap (e.g. SIFT's 500): a prefix of the balanced manifest.
-    if not args.full:
+    if not args.full and not args.no_cap:
         cap = cfg["subsampling"].get("per_model_n_probes", {}).get(args.model)
         if cap:
             probes = probes[:int(cap)]
