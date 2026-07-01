@@ -38,7 +38,8 @@ baseline-vs-preprocessing effect is tested with a paired McNemar test. The main
 result overturns a common intuition: the most classical method (SIFT) is the most
 accurate and the most robust, barely degrading from Easy to Hard, whereas the
 recent deep embedding (frozen DINOv2) is the weakest and collapses; and the
-benefit of preprocessing is \emph{model-dependent} rather than universal.
+benefit of preprocessing is \emph{model-dependent} rather than universal ---
+statistically significant only for the Gabor texture model.
 \end{abstract}
 
 \section{Introduction}
@@ -247,8 +248,9 @@ The ranking is \textbf{SIFT $\gg$ Gabor $\gg$ DINOv2} at every level
 (Table~\ref{tab:rank1}, Fig.~\ref{fig:rank1}), and the gap widens with difficulty.
 SIFT barely degrades (Rank-1 $99.6\%\!\to\!96.9\%$ from Easy to Hard, i.e.\ $-2.7$
 points) whereas DINOv2 collapses ($85.7\%\!\to\!28.3\%$, $-57$ points); Gabor sits
-in between. The CMC curves (Fig.~\ref{fig:cmc} for SIFT) confirm that the correct
-identity is retrieved within the very top ranks even at Hard.
+in between. The CMC curves (Fig.~\ref{fig:cmc}) confirm the picture: SIFT retrieves
+the correct identity within the very top ranks at every level, Gabor a little
+lower, while DINOv2 needs many more ranks and diverges at Hard.
 
 \begin{table}[h]
 \centering
@@ -278,10 +280,10 @@ dashed = preprocessed.}
 
 \begin{figure}[h]
 \centering
-\includegraphics[width=0.60\textwidth]{cmc_sift.png}
-\caption{CMC curve for SIFT (baseline). The recognition rate reaches near-100\%
-within a few ranks at every level. (CMC curves for Gabor and DINOv2 are added once
-those models are re-run with per-probe archiving.)}
+\includegraphics[width=\textwidth]{cmc_by_level.png}
+\caption{CMC curves (baseline) for the three models at each difficulty level. SIFT
+stays at the top and barely moves; Gabor is intermediate; DINOv2 falls and
+diverges as difficulty increases.}
 \label{fig:cmc}
 \end{figure}
 
@@ -310,29 +312,32 @@ Zcut (cut)         & 0.990 & 0.981 & 0.305 \\
 \end{table}
 
 \subsection{Effect of preprocessing}
-The most nuanced result (Table~\ref{tab:prep}, Fig.~\ref{fig:prep}): the contrast
-mask \textbf{helps the texture descriptor (Gabor), increasingly with difficulty}
-($+0.7$/$+3.0$/$+3.4$ Rank-1 points); is \textbf{marginal for the deep embedding}
-(DINOv2, $\sim\!+0.6$ flat); and is \textbf{statistically neutral for the keypoint
-matcher (SIFT)} --- the paired McNemar test is non-significant at every level
-(Easy $p=0.69$, Medium $p=0.23$, Hard $p=0.15$), and sharpening even slightly hurts
-SIFT at Hard, plausibly by introducing spurious keypoints that break geometric
-consistency. A preprocessing operator devised for facial robustness is therefore
-not a universal good: its value depends on the downstream representation. (The
-paired significance for Gabor and DINOv2 is computed once those models are
-re-run with per-probe archiving; their $\Delta$ values here are point estimates.)
+The most nuanced result (Table~\ref{tab:prep}, Fig.~\ref{fig:prep}), now
+substantiated by the paired McNemar test: the contrast mask \textbf{significantly
+helps the texture descriptor (Gabor)}, at every level and strongly so as
+difficulty rises (Easy $+0.7$\,pp, $p=0.011$; Medium $+3.0$\,pp and Hard $+3.4$\,pp,
+$p<10^{-10}$). For the \textbf{deep embedding (DINOv2)} the small gains are
+\textbf{not significant} (Easy/Medium/Hard $p=0.38/0.68/0.52$), and for the
+\textbf{keypoint matcher (SIFT)} the effect is likewise \textbf{not significant}
+at any level ($p=0.69/0.23/0.15$); sharpening even slightly hurts SIFT at Hard,
+plausibly by introducing spurious keypoints that break geometric consistency. A
+preprocessing operator devised for facial robustness is therefore not a universal
+good: its value is contingent on the downstream representation, and here it is
+statistically justified only for Gabor.
 
 \begin{table}[h]
 \centering
-\caption{$\Delta$Rank-1 from preprocessing (percentage points). For SIFT the paired
-McNemar test is non-significant (ns) at every level.}
+\caption{$\Delta$Rank-1 from preprocessing (percentage points), with paired
+McNemar significance (\textsuperscript{*}$p<0.05$,
+\textsuperscript{***}$p<0.001$; ns $=$ not significant). Only Gabor's gains are
+statistically significant.}
 \label{tab:prep}
 \begin{tabular}{@{}lccc@{}}
 \toprule
 $\Delta$Rank-1 (pp) & Easy & Medium & Hard \\
 \midrule
-\textbf{Gabor}  & $+0.7$ & $+3.0$ & $+3.4$ \\
-\textbf{DINOv2} & $+0.7$ & $+0.5$ & $+0.7$ \\
+\textbf{Gabor}  & $+0.7$\textsuperscript{*} & $+3.0$\textsuperscript{***} & $+3.4$\textsuperscript{***} \\
+\textbf{DINOv2} & $+0.7$~(ns) & $+0.5$~(ns) & $+0.7$~(ns) \\
 \textbf{SIFT}   & $-0.1$~(ns) & $+0.4$~(ns) & $-0.6$~(ns) \\
 \bottomrule
 \end{tabular}
