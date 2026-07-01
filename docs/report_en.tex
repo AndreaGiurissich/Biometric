@@ -1,0 +1,498 @@
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+\sisetup{detect-weight=true,detect-family=true}
+
+\begin{document}
+
+\title{Robustness of Fingerprint Recognition on SOCOFing:\\
+A Comparison of Three Frozen Models under Increasing Alterations\\
+and a Contrast-Mask Preprocessing Pipeline}
+
+\author{\IEEEauthorblockN{Andrea Giurissich}
+\IEEEauthorblockA{Biometric Systems Project}}
+
+\maketitle
+
+\begin{abstract}
+We present a closed-set 1:N biometric identification study on the
+\textbf{SOCOFing} dataset~\cite{socofing} comparing three inference-only
+(\emph{frozen}) recognition models --- a \textbf{Gabor} texture descriptor, a
+\textbf{SIFT\,+\,RANSAC} keypoint matcher, and a \textbf{DINOv2} deep embedding
+--- and quantifying how a contrast-mask preprocessing pipeline affects
+performance as alteration difficulty increases (Easy/Medium/Hard) and across
+alteration types (obliteration, central rotation, Z-cut). Every model is run on a
+shared, seeded, stratified \num{2000}-probe manifest against the full
+\num{6000}-identity gallery, and evaluated with both identification (Rank-$k$,
+CMC, MRR) and verification (ROC, EER, AUC, FAR@FRR, FRR@FAR) metrics; the
+baseline-vs-preprocessing effect is tested with paired statistics (McNemar and a
+paired bootstrap). The headline result overturns a common intuition: the most
+classical method (SIFT) is the most accurate and the most robust, degrading by
+only $2.7$ points of Rank-1 from Easy to Hard; the recent deep embedding (frozen
+DINOv2) is the weakest and \emph{collapses} (a $57$-point drop); and the
+preprocessing benefit is \textbf{model-dependent}, clearly helping the texture
+model, marginal for the deep model, and statistically neutral for the keypoint
+matcher.
+\end{abstract}
+
+\begin{IEEEkeywords}
+fingerprint recognition, SOCOFing, SIFT, RANSAC, Gabor, DINOv2, minutiae,
+robustness, preprocessing, biometrics.
+\end{IEEEkeywords}
+
+\section{Introduction}
+Fingerprint recognition is a mature biometric task, yet the relative merits of
+classical hand-crafted representations and modern self-supervised deep features
+are rarely compared \emph{under controlled degradation}. We use SOCOFing, whose
+synthetic alterations provide graded, typed difficulty, to ask two questions:
+(i)~how do a texture descriptor, a keypoint matcher, and a frozen deep embedding
+rank in accuracy and robustness as alterations worsen; and (ii)~is a generic
+contrast-enhancement preprocessing pipeline a universal benefit, or does its
+value depend on the downstream representation? Both answers are, perhaps
+surprisingly, counter to the ``deep-is-best, sharpening-always-helps'' intuition.
+
+\section{The SOCOFing dataset}
+\textbf{SOCOFing} (Sokoto Coventry Fingerprint Dataset)~\cite{socofing} contains
+fingerprints from \num{600} subjects, \num{10} fingers each, for a total of
+\textbf{\num{6000} identities} (an identity is a single finger, not a subject).
+Each image is grayscale BMP at low resolution ($\sim\!96\times103$ px, i.e.\
+$\sim\!\num{200}$\,dpi on disk). For each identity the dataset provides one
+\textbf{Real} (unaltered) image, used as the \emph{gallery} template, and several
+\textbf{Altered} images, used as \emph{probes}. The alterations were produced by
+the SOCOFing authors with the STRANGE toolbox~\cite{socofing} in three severity
+levels --- \emph{Easy}, \emph{Medium}, \emph{Hard} --- and three types:
+\textbf{Obl} (obliteration: erasure/degradation of the ridge structure),
+\textbf{CR} (central rotation of a portion), and \textbf{Zcut} (a Z-shaped cut
+removing part of the image).
+
+The protocol is \emph{closed-set 1:N identification}: the gallery is all
+\num{6000} Real images (one template per identity); probes are the Altered
+images, evaluated separately per level and per alteration type; by construction
+every probe's true identity is present in the gallery.
+
+\section{Recognition models}
+All models are \textbf{frozen}: no training or fine-tuning is performed on
+SOCOFing --- pure, deterministic inference. They share a unified
+\texttt{extract}/\texttt{score} interface (Table~\ref{tab:models}), but differ
+fundamentally in \emph{what} they represent (global vs local, texture vs geometry
+vs learned semantics), which is precisely what the robustness comparison probes.
+
+\begin{table}[t]
+\centering
+\caption{The three recognition models.}
+\label{tab:models}
+\small
+\begin{tabular}{@{}lll@{}}
+\toprule
+Model & Representation & Score \\
+\midrule
+SIFT\,+\,RANSAC & keypoints (local, geometric) & RANSAC inliers \\
+Gabor & filter bank (local, texture) & cosine \\
+DINOv2 ViT-B/14 & CLS embedding (global, deep) & cosine \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Gabor texture descriptor}
+A Gabor filter is a complex sinusoid modulated by a Gaussian envelope; it is
+jointly selective in \emph{orientation} and \emph{spatial frequency} and is a
+classical model of oriented ridge texture, underpinning the FingerCode
+approach to fingerprint matching~\cite{jain2000}. We build a bank of
+$8$ orientations $\theta_o=o\pi/8$ and $4$ frequencies (\num{32} filters). Each
+image is resized to a canonical size (so that a frequency expressed in cycles/px
+denotes the same physical scale across the variably-sized altered images), and
+every filter is zero-meaned to remove its DC response so that flat regions
+contribute nothing. For each filter we convolve the image and take the magnitude
+of the response; the mean absolute response is then pooled over an $8\times8$
+spatial grid. Concatenating over $32$ filters and $64$ cells yields a
+\textbf{\num{2048}-dimensional} descriptor, L2-normalized. Two descriptors are
+compared by \textbf{cosine similarity}. The representation is thus \emph{local}
+(grid cells) and captures oriented ridge \emph{texture} statistics; it does not
+model ridge geometry explicitly.
+
+\subsection{SIFT + RANSAC}
+The Scale-Invariant Feature Transform~\cite{lowe2004} detects keypoints as
+scale-space extrema of a difference-of-Gaussian pyramid; each keypoint is
+described by a $128$-dimensional histogram of local gradient orientations,
+invariant to scale and rotation and robust to moderate affine and illumination
+change. Matching between a probe and a gallery image proceeds in two stages.
+First, descriptors are matched by approximate nearest neighbour (FLANN) and
+filtered with \emph{Lowe's ratio test}~\cite{lowe2004} (ratio $0.75$), which
+discards ambiguous matches whose best and second-best neighbours are too close.
+Second, the surviving putative matches are subjected to \textbf{geometric
+verification}: a homography is fitted with RANSAC~\cite{fischler1981}, and the
+number of \textbf{geometrically consistent inliers} is used as the similarity
+score. This two-stage design is the source of SIFT's robustness here: RANSAC
+retains only the keypoints that agree on a single consistent transformation and
+\emph{discards} those from occluded, rotated, or obliterated regions. The cost is
+that scoring is $O(N\times\text{gallery})$: every probe is matched against all
+\num{6000} gallery templates.
+
+\subsection{DINOv2 embedding}
+DINOv2~\cite{oquab2024} is a Vision Transformer (ViT-B/14)~\cite{dosovitskiy2021}
+pretrained with a self-supervised objective on a large corpus of \emph{natural}
+images, producing general-purpose visual features without labels. The image is
+split into $14\times14$-pixel patches ($16\times16$ patches at $224\times224$),
+each linearly embedded with a positional encoding; a special \texttt{[CLS]} token
+is prepended, and the stacked self-attention layers let it aggregate a
+\emph{global} image representation. We use the model frozen: the grayscale image
+is resized to $224\times224$, replicated to three channels, ImageNet-normalized,
+and passed through the network in eval/no-grad mode; the resulting $768$-D CLS
+embedding is L2-normalized and compared by \textbf{cosine similarity}. Crucially,
+the representation is \emph{global} and \emph{out-of-distribution} for
+low-resolution fingerprint texture --- two properties that, as the results show,
+make it fragile to local alterations.
+
+\subsection{The dropped minutiae model: NBIS and MinutiaeNet}
+\label{sec:nbis}
+The study was originally designed with a fourth, \emph{minutiae}-based model ---
+the canonical and forensically accepted fingerprint representation, in which an
+identity is encoded by the set of ridge \emph{endings} and \emph{bifurcations}
+(each a triplet of position and orientation, $x,y,\theta$). We report its
+investigation in full because its \emph{failure} is itself informative about the
+dataset.
+
+Because no maintained Python binding of SourceAFIS exists, we used NIST's
+\textbf{NBIS}~\cite{nbis}. Its extractor, \textbf{MINDTCT}, estimates the local
+ridge \emph{flow} (orientation) and \emph{frequency} on a grid of image blocks,
+binarizes and thins the ridges to a one-pixel skeleton, detects endings and
+bifurcations on that skeleton, and assigns each a quality value, emitting a
+minutiae template. The matcher, \textbf{BOZORTH3}, builds rotation- and
+translation-invariant intra- and inter-fingerprint compatibility tables from two
+templates and finds the largest mutually consistent cluster of minutiae pairs,
+whose size is the match score.
+
+On SOCOFing this pipeline is \emph{plumbing-correct but degenerate}. MINDTCT is
+calibrated for $\sim\!\num{500}$\,dpi full-finger captures and partitions the
+image into small ($\sim\!8$-px) blocks for ridge-flow and frequency estimation;
+at SOCOFing's $\sim\!96\times103$ px there are too few valid blocks, so almost no
+minutiae survive --- typically \textbf{4--6 per image} against the dozens a usable
+print yields --- and BOZORTH3, unable to reach its minimum matching-pair count,
+returns \emph{zero} scores. We then tried a deep, resolution-tolerant extractor,
+\textbf{MinutiaeNet}~\cite{nguyen2018} (a CoarseNet\,+\,FineNet CNN, frozen). At
+native resolution it extracted essentially \emph{no} minutiae; only after
+$\sim\!4\times$ upsampling did it recover $\sim\!15$--$20$ minutiae, and even then
+the yield was noisy and non-monotonic in the upscale factor and validated on a
+single fingerprint. Because this fragile gain would have required an
+upsampling step (a change to the frozen preprocessing) for a template far weaker
+than the other models', the \textbf{minutiae paradigm was dropped}, and the study
+proceeds with three models. The finding stands on its own: \emph{SOCOFing's native
+resolution is below the operating point of both classical and deep minutiae
+extractors}.
+
+\subsection{Contrast-mask preprocessing}
+The preprocessing under test is a \textbf{contrast-mask} operator adapted from
+face-detection robustness work (no facial alignment). A soft mask of high-contrast
+regions is built (Gaussian denoise $\to$ Laplacian $\to$ blur $\to$ threshold
+$\to$ blur), the original is sharpened by \emph{unsharp masking}~\cite{gonzalez},
+and the two are blended according to the mask,
+$\text{out}=m\cdot\text{sharp}+(1-m)\cdot\text{orig}$, so that ridge regions are
+sharpened while the background is left intact. In the \texttt{preprocessed}
+condition the operator is applied \textbf{symmetrically to gallery and probes}
+with identical parameters; the \texttt{baseline} condition uses raw images.
+
+\section{Experimental protocol}
+\subsection{Conditions and evaluation tier}
+Each model is evaluated under two conditions (\emph{baseline} vs
+\emph{preprocessed}) on \textbf{Tier A}: a \num{2000}-probe manifest, stratified
+by alteration type and seeded, shared across models for a fair comparison. (A
+Tier-B ``best estimate'' over the full probe set is used for the embedding models;
+SIFT's $O(N\times\text{gallery})$ cost makes a full-set run infeasible, so SIFT is
+reported at Tier~A.)
+
+\subsection{Metrics}
+For \textbf{identification} (rank-based, comparable across models) we report
+Rank-1/5/10, the full CMC curve, and MRR~\cite{maltoni}; the rank of the true
+mate is computed with pessimistic tie handling. For \textbf{verification} (each
+model's native, non-normalized score) we report the ROC, EER, AUC --- computed
+exactly as the Mann--Whitney statistic~\cite{hanley1982} to avoid trapezoidal
+tie artifacts --- and the operating points FAR@FRR=1\% and
+FRR@FAR=1\%~\cite{maltoni,cappelli2006}. There is one genuine score per probe;
+impostors are \num{100} seeded non-self identities per probe.
+
+\subsection{Statistical significance}
+Because both conditions are evaluated on the same probes, the comparison is
+\emph{paired}: McNemar's test~\cite{mcnemar1947} on Rank-1 hits, and a paired
+bootstrap~\cite{efron1979} (resampling probes) for the confidence interval and
+$p$-value of $\Delta$EER and $\Delta$AUC, both overall and per alteration type.
+
+\subsection{Implementation}
+The code is config-driven (a single YAML source of truth, all randomness seeded).
+A model-agnostic pipeline extracts the \num{6000} gallery descriptors once (with a
+parameter-signed cache), then for each probe extracts its descriptor, scores it
+against the whole gallery, and records the true-mate rank and the
+genuine/impostor scores incrementally (resume-safe). Execution runs on Kaggle (a
+T4 GPU for DINOv2; SIFT is CPU-bound and process-parallel). All randomness
+(subsampling, impostor sampling, RANSAC) is seeded, and raw per-probe scores are
+archived with a snapshot of the configuration and library versions.
+
+\section{Results}
+SIFT numbers are computed directly from the archived per-probe scores in
+\texttt{results/} (\num{2000} probes per cell); Gabor and DINOv2 numbers are from
+the same Tier-A, \num{2000}-probe protocol.
+
+\subsection{Identification: ranking and robustness}
+The ranking is \textbf{SIFT $\gg$ Gabor $\gg$ DINOv2} at every level
+(Table~\ref{tab:rank1}, Fig.~\ref{fig:rank1}), and the gap \emph{widens} with
+difficulty: at Hard, SIFT reaches $96.9\%$ Rank-1 versus DINOv2's $28.3\%$. SIFT
+barely degrades ($-2.7$ points Easy$\to$Hard) while DINOv2 \textbf{collapses}
+($-57$ points). The mechanism is structural: SIFT's RANSAC step keeps only the
+\emph{surviving} consistent keypoints and ignores the rest, tolerating local
+damage, whereas DINOv2's single global embedding shifts whenever the image
+changes and is out-of-distribution on fingerprint texture.
+
+\begin{table}[t]
+\centering
+\caption{Rank-1 (\%), baseline / preprocessed, by model and level. Best per row
+in bold.}
+\label{tab:rank1}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Rank-1 (\%) & \textbf{SIFT} & \textbf{Gabor} & \textbf{DINOv2} \\
+\midrule
+Easy   & \textbf{99.6 / 99.5} & 96.1 / 96.7 & 85.7 / 86.4 \\
+Medium & \textbf{98.3 / 98.7} & 86.4 / 89.5 & 45.9 / 46.3 \\
+Hard   & \textbf{96.9 / 96.3} & 81.2 / 84.6 & 28.3 / 29.0 \\
+\midrule
+Easy$\to$Hard (base) & \textbf{$-2.7$} & $-14.9$ & $-57.4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{rank1_by_level.png}
+\caption{Rank-1 vs.\ alteration difficulty. Solid = baseline, dashed =
+preprocessed.}
+\label{fig:rank1}
+\end{figure}
+
+\subsection{Verification: ROC and operating points}
+The verification picture is even sharper (Table~\ref{tab:verif},
+Figs.~\ref{fig:roc}--\ref{fig:eer}). SIFT's inlier-count score separates genuine
+from impostor comparisons by a wide margin (mean $\sim\!30$ inliers vs
+$\sim\!0.5$), giving EER around $0.3$--$1.2\%$ and, critically, a usable
+\textbf{strict operating point}: at FRR=1\% its FAR stays at $0.06$--$1.5\%$
+across all levels. Gabor and DINOv2, despite respectable EER/AUC, have heavily
+overlapping score tails: at FRR=1\% their FAR exceeds $60$--$77\%$ on the harder
+levels, i.e.\ they are \emph{unusable} at a low-false-reject threshold. The SIFT
+ROC (Fig.~\ref{fig:roc}) hugs the top-left corner even at Hard (AUC $0.998$),
+while the EER trend (Fig.~\ref{fig:eer}) shows the three models diverging with
+difficulty.
+
+\begin{table*}[t]
+\centering
+\caption{Verification metrics (baseline condition). SIFT values are computed from
+archived per-probe scores; ROC and FRR@FAR require per-probe scores, retained on
+disk for SIFT (``---'' where not archived for Gabor/DINOv2, reported at the same
+protocol).}
+\label{tab:verif}
+\begin{tabular}{@{}llcccc@{}}
+\toprule
+Model & Level & EER $\downarrow$ & AUC $\uparrow$ & FAR@FRR=1\% $\downarrow$ & FRR@FAR=1\% $\downarrow$ \\
+\midrule
+\textbf{SIFT}   & Easy   & \textbf{0.0030} & \textbf{0.9997} & \textbf{0.0006} & \textbf{0.0008} \\
+                & Medium & \textbf{0.0075} & \textbf{0.9983} & \textbf{0.0039} & \textbf{0.0071} \\
+                & Hard   & \textbf{0.0103} & \textbf{0.9981} & \textbf{0.0109} & \textbf{0.0106} \\
+\midrule
+Gabor           & Easy   & 0.0545 & 0.9877 & 0.329 & --- \\
+                & Medium & 0.1143 & 0.9556 & 0.663 & --- \\
+                & Hard   & 0.1305 & 0.9368 & 0.773 & --- \\
+\midrule
+DINOv2          & Easy   & 0.0705 & 0.9801 & 0.343 & --- \\
+                & Medium & 0.1694 & 0.9161 & 0.658 & --- \\
+                & Hard   & 0.1980 & 0.8828 & 0.755 & --- \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{roc_sift.png}
+\caption{SIFT ROC (baseline), log FAR axis. Near-perfect separation persists at
+Hard (AUC $0.998$).}
+\label{fig:roc}
+\end{figure}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{eer_by_level.png}
+\caption{EER vs.\ difficulty for the three models (solid = baseline, dashed =
+preprocessed). Lower is better.}
+\label{fig:eer}
+\end{figure}
+
+\subsection{Per-alteration analysis}
+The per-type breakdown (Table~\ref{tab:alt}) reveals the failure modes.
+\textbf{DINOv2 fails on all} hard alterations --- even on a clean cut (Zcut,
+$0.305$) that SIFT and Gabor absorb --- because a global embedding cannot tolerate
+a missing region. \textbf{Gabor's weakness is obliteration} ($0.654$): texture
+statistics degrade when ridges are destroyed, though it stays robust to cutting
+($0.981$). \textbf{SIFT is robust to all types} ($\ge0.954$): geometric keypoint
+consistency survives rotation, cutting, and partial obliteration alike.
+
+\begin{table}[t]
+\centering
+\caption{Rank-1 by alteration type at the Hard level (baseline).}
+\label{tab:alt}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Hard, Rank-1 & \textbf{SIFT} & \textbf{Gabor} & \textbf{DINOv2} \\
+\midrule
+CR (rotation)      & 0.954 & 0.802 & 0.234 \\
+Obl (obliteration) & 0.964 & 0.654 & 0.310 \\
+Zcut (cut)         & 0.990 & 0.981 & 0.305 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Effect of preprocessing}
+The most nuanced result (Table~\ref{tab:prep}, Fig.~\ref{fig:prep}): the contrast
+mask \textbf{helps the texture descriptor (Gabor), increasingly with difficulty}
+($+0.7$/$+3.0$/$+3.4$ points); is \textbf{marginal for the deep embedding} (DINOv2,
+$\sim\!+0.6$ flat); and is \textbf{statistically neutral for the keypoint matcher
+(SIFT)} --- the paired McNemar test is non-significant at every level (Easy $p=0.69$,
+Medium $p=0.23$, Hard $p=0.15$) and the $\Delta$EER bootstrap intervals include
+zero. Indeed sharpening slightly \emph{hurts} SIFT at Hard, plausibly because it
+introduces spurious keypoints that break geometric consistency. A preprocessing
+operator devised for facial robustness is therefore \emph{not} a universal good:
+its value is contingent on the downstream representation.
+
+\begin{table}[t]
+\centering
+\caption{$\Delta$Rank-1 from preprocessing (percentage points). For SIFT the
+paired McNemar test is non-significant (ns) at every level.}
+\label{tab:prep}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+$\Delta$Rank-1 (pp) & Easy & Medium & Hard \\
+\midrule
+\textbf{Gabor}  & $+0.7$ & $+3.0$ & $+3.4$ \\
+\textbf{DINOv2} & $+0.7$ & $+0.5$ & $+0.7$ \\
+\textbf{SIFT}   & $-0.1$~(ns) & $+0.4$~(ns) & $-0.6$~(ns) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{preprocessing_delta.png}
+\caption{Rank-1 gain from preprocessing, by model and level.}
+\label{fig:prep}
+\end{figure}
+
+\section{Discussion}
+The study overturns common intuition twice. First, the most recent deep model
+(frozen DINOv2) is the \emph{worst} and collapses on hard alterations, while the
+oldest method (SIFT\,+\,RANSAC) is the \emph{best} and barely degrades: on altered
+fingerprints, \emph{local, geometric} robustness beats the global semantics of an
+out-of-distribution embedding. Second, a preprocessing pipeline that helps one
+model (Gabor) is neutral or harmful for another (SIFT), so preprocessing benefit
+is \emph{contingent on the representation}, not universal. The per-alteration
+analysis makes the mechanisms concrete: global embeddings are fragile to cuts,
+texture statistics to obliteration, and geometric keypoint matching to none of
+them.
+
+\paragraph{Limitations}
+SIFT is reported at Tier A (\num{2000} probes); its $O(N\times\text{gallery})$
+cost makes a full-probe Tier-B run infeasible. DINOv2 is used exactly as its
+frozen specification dictates (CLS token, $224$ px), so the result reflects
+off-the-shelf features rather than a higher-resolution or fine-tuned variant.
+Paired significance and full ROC/FRR@FAR are computed for SIFT, whose per-probe
+scores are archived; for Gabor/DINOv2 the reported operating points are from the
+same protocol and their paired tests can be reproduced with the provided tooling
+once their per-probe scores are re-archived.
+
+\section{Conclusions}
+On SOCOFing, a classical SIFT\,+\,RANSAC matcher is by a wide margin the most
+accurate and robust fingerprint recognizer among the three, the only one usable
+at a strict security threshold, and essentially insensitive to the tested
+preprocessing; a Gabor texture descriptor is intermediate and benefits from
+preprocessing increasingly with difficulty; and a frozen DINOv2 embedding is the
+weakest and collapses under hard alterations. The practical takeaways are that
+geometric local matching is the safer choice for altered low-resolution prints,
+and that contrast-enhancement preprocessing should be validated per model rather
+than assumed beneficial.
+
+\begin{thebibliography}{99}
+
+\bibitem{socofing}
+Y.~I. Shehu, A.~Ruiz-Garcia, V.~Palade, and A.~James,
+``Sokoto Coventry Fingerprint Dataset (SOCOFing),''
+\emph{arXiv:1807.10609}, 2018.
+
+\bibitem{lowe2004}
+D.~G. Lowe,
+``Distinctive image features from scale-invariant keypoints,''
+\emph{Int.\ J.\ Computer Vision}, vol.~60, no.~2, pp.~91--110, 2004.
+
+\bibitem{fischler1981}
+M.~A. Fischler and R.~C. Bolles,
+``Random sample consensus: a paradigm for model fitting with applications to image analysis and automated cartography,''
+\emph{Commun.\ ACM}, vol.~24, no.~6, pp.~381--395, 1981.
+
+\bibitem{jain2000}
+A.~K. Jain, S.~Prabhakar, L.~Hong, and S.~Pankanti,
+``Filterbank-based fingerprint matching,''
+\emph{IEEE Trans.\ Image Process.}, vol.~9, no.~5, pp.~846--859, 2000.
+
+\bibitem{dosovitskiy2021}
+A.~Dosovitskiy \emph{et al.},
+``An image is worth 16x16 words: transformers for image recognition at scale,''
+in \emph{ICLR}, 2021. \emph{arXiv:2010.11929}.
+
+\bibitem{oquab2024}
+M.~Oquab \emph{et al.},
+``DINOv2: learning robust visual features without supervision,''
+\emph{TMLR}, 2024. \emph{arXiv:2304.07193}.
+
+\bibitem{nbis}
+C.~I. Watson \emph{et al.},
+\emph{User's Guide to NIST Biometric Image Software (NBIS)},
+NIST, 2007. (MINDTCT extractor; BOZORTH3 matcher.)
+
+\bibitem{nguyen2018}
+D.-L. Nguyen, K.~Cao, and A.~K. Jain,
+``Robust minutiae extractor: integrating deep networks and fingerprint domain knowledge,''
+in \emph{Int.\ Conf.\ Biometrics (ICB)}, 2018. \emph{arXiv:1712.09401}.
+
+\bibitem{maltoni}
+D.~Maltoni, D.~Maio, A.~K. Jain, and S.~Prabhakar,
+\emph{Handbook of Fingerprint Recognition}, 2nd ed. Springer, 2009.
+
+\bibitem{cappelli2006}
+R.~Cappelli, D.~Maio, D.~Maltoni, J.~L. Wayman, and A.~K. Jain,
+``Performance evaluation of fingerprint verification systems,''
+\emph{IEEE Trans.\ Pattern Anal.\ Mach.\ Intell.}, vol.~28, no.~1, pp.~3--18, 2006.
+
+\bibitem{hanley1982}
+J.~A. Hanley and B.~J. McNeil,
+``The meaning and use of the area under a ROC curve,''
+\emph{Radiology}, vol.~143, no.~1, pp.~29--36, 1982.
+
+\bibitem{mcnemar1947}
+Q.~McNemar,
+``Note on the sampling error of the difference between correlated proportions or percentages,''
+\emph{Psychometrika}, vol.~12, no.~2, pp.~153--157, 1947.
+
+\bibitem{efron1979}
+B.~Efron,
+``Bootstrap methods: another look at the jackknife,''
+\emph{Ann.\ Statist.}, vol.~7, no.~1, pp.~1--26, 1979.
+
+\bibitem{gonzalez}
+R.~C. Gonzalez and R.~E. Woods,
+\emph{Digital Image Processing}, 4th ed. Pearson, 2018.
+
+\end{thebibliography}
+
+\end{document}
